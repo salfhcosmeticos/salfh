@@ -2,3 +2,5 @@ node_modules/
 .next/
 .env
 .superpowers/
+next-env.d.ts
+*.tsbuildinfo
