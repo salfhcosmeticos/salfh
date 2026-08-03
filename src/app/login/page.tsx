@@ -6,12 +6,22 @@ import { createBrowserSupabaseClient } from '@/lib/supabase/browser'
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
-    const supabase = createBrowserSupabaseClient()
-    await supabase.auth.signInWithOtp({ email })
-    setSent(true)
+    setError(null)
+    try {
+      const supabase = createBrowserSupabaseClient()
+      const { error: signInError } = await supabase.auth.signInWithOtp({ email })
+      if (signInError) {
+        setError(signInError.message)
+        return
+      }
+      setSent(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro inesperado ao enviar o link de acesso.')
+    }
   }
 
   if (sent) {
@@ -31,6 +41,7 @@ export default function LoginPage() {
         />
         <button type="submit">Entrar</button>
       </form>
+      {error ? <p role="alert">{error}</p> : null}
     </main>
   )
 }
