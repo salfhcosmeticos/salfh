@@ -58,7 +58,7 @@ describe('upsertOrder', () => {
     expect(itemsUpsertCalls).toHaveLength(1)
     expect(itemsUpsertCalls[0]).toMatchObject({
       opts: { onConflict: 'order_id,ml_item_id' },
-      data: [expect.objectContaining({ order_id: 'order-row-1', ml_item_id: 'MLB1' })],
+      data: [expect.objectContaining({ order_id: 'order-row-1', user_id: 'user-1', ml_item_id: 'MLB1' })],
     })
   })
 })
