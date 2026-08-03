@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getRedirectPathForSession } from '@/lib/auth/session'
+import { ConnectMercadoLivreButton } from '@/components/ConnectMercadoLivreButton'
 
 export default async function HomePage() {
   const supabase = await createServerSupabaseClient()
@@ -11,5 +12,10 @@ export default async function HomePage() {
     redirect(redirectPath)
   }
 
-  return <main>Dashboard de Vendas</main>
+  return (
+    <main>
+      Dashboard de Vendas
+      <ConnectMercadoLivreButton />
+    </main>
+  )
 }
