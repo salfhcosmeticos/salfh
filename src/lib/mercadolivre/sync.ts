@@ -108,22 +108,32 @@ async function syncOrdersInRange(
   let offset = 0
   let total = Infinity
 
-  const accessToken = await getValidAccessToken(account, await persistRefreshedTokens(supabase, account.id))
+  try {
+    const accessToken = await getValidAccessToken(account, await persistRefreshedTokens(supabase, account.id))
 
-  while (offset < total) {
-    const page = await searchOrders(accessToken, account.mlUserId, fromDate, toDate, offset)
-    total = page.total
-    for (const order of page.orders) {
-      try {
-        await upsertOrder(supabase, account.id, account.userId, order)
-        processed += 1
-      } catch (error) {
-        errors += 1
-        lastError = error instanceof Error ? error.message : String(error)
+    while (offset < total) {
+      const page = await searchOrders(accessToken, account.mlUserId, fromDate, toDate, offset)
+      total = page.total
+      for (const order of page.orders) {
+        try {
+          await upsertOrder(supabase, account.id, account.userId, order)
+          processed += 1
+        } catch (error) {
+          errors += 1
+          lastError = error instanceof Error ? error.message : String(error)
+        }
       }
+      if (page.orders.length === 0) break
+      offset += page.orders.length
     }
-    if (page.orders.length === 0) break
-    offset += page.orders.length
+  } catch (error) {
+    // Failures here mean a token refresh or a searchOrders page call itself
+    // failed (as opposed to a single order failing to upsert, which is
+    // handled above). Treat it the same way: record it and let the run end
+    // gracefully with whatever was processed so far, instead of throwing
+    // past recordSyncRun and out to the caller.
+    errors += 1
+    lastError = error instanceof Error ? error.message : String(error)
   }
 
   await recordSyncRun(supabase, account.id, account.userId, runType, { processed, errors, lastError })

@@ -38,18 +38,25 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/?ml_error=save_failed', request.url))
   }
 
-  await backfillOrders(
-    supabase,
-    {
-      id: accountRow.id,
-      userId: owner.id,
-      mlUserId: tokens.mlUserId,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      tokenExpiresAt: tokens.expiresAt,
-    },
-    12
-  )
+  try {
+    await backfillOrders(
+      supabase,
+      {
+        id: accountRow.id,
+        userId: owner.id,
+        mlUserId: tokens.mlUserId,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        tokenExpiresAt: tokens.expiresAt,
+      },
+      12
+    )
+  } catch (error) {
+    // The account is already saved successfully at this point, so a backfill
+    // failure should not read to the user as a failed connection. Log and
+    // still redirect to the normal success URL.
+    console.error('Mercado Livre backfill failed after connecting account:', error)
+  }
 
   return NextResponse.redirect(new URL('/?ml_connected=true', request.url))
 }

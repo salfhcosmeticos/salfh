@@ -7,6 +7,7 @@ import * as client from './client'
 function createFakeSupabase() {
   const orderUpsertCalls: unknown[] = []
   const itemsUpsertCalls: unknown[] = []
+  const syncRunInserts: unknown[] = []
 
   const supabaseClient = {
     from(table: string) {
@@ -28,14 +29,17 @@ function createFakeSupabase() {
       }
       if (table === 'sync_runs') {
         return {
-          insert: async () => ({ error: null }),
+          insert: async (data: unknown) => {
+            syncRunInserts.push(data)
+            return { error: null }
+          },
         }
       }
       throw new Error(`Unexpected table: ${table}`)
     },
   }
 
-  return { client: supabaseClient as unknown as SupabaseClient, orderUpsertCalls, itemsUpsertCalls }
+  return { client: supabaseClient as unknown as SupabaseClient, orderUpsertCalls, itemsUpsertCalls, syncRunInserts }
 }
 
 const sampleOrder: MercadoLivreOrder = {
@@ -92,5 +96,64 @@ describe('backfillOrders', () => {
     expect(result.processed).toBe(2)
     expect(result.errors).toBe(0)
     expect(orderUpsertCalls).toHaveLength(2)
+  })
+
+  it('does not throw and still records a sync_runs row when searchOrders fails partway through', async () => {
+    const { client: supabase, orderUpsertCalls, syncRunInserts } = createFakeSupabase()
+
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    const searchOrdersMock = vi.spyOn(client, 'searchOrders')
+    searchOrdersMock.mockResolvedValueOnce({ orders: [sampleOrder], total: 2 })
+    searchOrdersMock.mockRejectedValueOnce(new Error('ML API unavailable'))
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+
+    const result = await backfillOrders(supabase, account, 12)
+
+    expect(result).toEqual({ processed: 1, errors: 1 })
+    expect(orderUpsertCalls).toHaveLength(1)
+    expect(syncRunInserts).toHaveLength(1)
+    expect(syncRunInserts[0]).toMatchObject({
+      account_id: 'account-1',
+      user_id: 'user-1',
+      run_type: 'backfill',
+      orders_processed: 1,
+      error_count: 1,
+      last_error: 'ML API unavailable',
+    })
+  })
+
+  it('does not throw and still records a sync_runs row when getValidAccessToken fails', async () => {
+    const { client: supabase, syncRunInserts } = createFakeSupabase()
+
+    vi.spyOn(client, 'getValidAccessToken').mockRejectedValue(new Error('token refresh failed'))
+    const searchOrdersMock = vi.spyOn(client, 'searchOrders')
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+
+    const result = await backfillOrders(supabase, account, 12)
+
+    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(searchOrdersMock).not.toHaveBeenCalled()
+    expect(syncRunInserts).toHaveLength(1)
+    expect(syncRunInserts[0]).toMatchObject({
+      error_count: 1,
+      orders_processed: 0,
+      last_error: 'token refresh failed',
+    })
   })
 })
