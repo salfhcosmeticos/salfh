@@ -1,17 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  Tooltip,
-  type TooltipProps,
-  XAxis,
-  YAxis,
-} from 'recharts'
+import { Bar, CartesianGrid, ComposedChart, Tooltip, type TooltipProps, XAxis, YAxis } from 'recharts'
 import { aggregateSales, type SalesGranularity, type SalesPoint } from '@/lib/sales/aggregate'
 import { formatCurrencyBRL } from '@/lib/format'
 
@@ -27,11 +17,10 @@ const GRANULARITY_LABELS: Record<SalesGranularity, string> = {
 }
 
 // Validated categorical palette (dataviz skill, references/palette.md).
-// Slots 1 and 2 (blue, orange) pass all six checks as an adjacent pair
-// (CVD ΔE 24.7, normal-vision ΔE 33.6 — well above the 8 / 15 floors) —
-// verified with scripts/validate_palette.js "#2a78d6,#eb6834" --mode light.
+// Single series (revenue) → slot 1 (blue). Order count was dropped from
+// this chart (owner decision, see task-11-report.md) in favor of a single
+// left-axis bar chart; the total is already shown in SummaryCards above.
 const COLOR_REVENUE = '#2a78d6' // categorical slot 1 (blue)
-const COLOR_ORDERS = '#eb6834' // categorical slot 2 (orange)
 
 // Chart chrome tokens (dataviz skill, references/palette.md), light surface.
 const INK_PRIMARY = '#0b0b0b'
@@ -44,6 +33,9 @@ const SURFACE = '#fcfcfb'
 function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null
 
+  const revenue = payload.find((entry) => entry.dataKey === 'revenue')
+  if (!revenue) return null
+
   return (
     <div
       style={{
@@ -54,18 +46,11 @@ function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) 
       }}
     >
       <p style={{ margin: 0, fontSize: 12, color: INK_SECONDARY }}>{label}</p>
-      {payload.map((entry) => (
-        <p
-          key={entry.dataKey as string}
-          style={{ margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-        >
-          <span style={{ display: 'inline-block', width: 12, height: 2, background: entry.color }} />
-          <strong style={{ color: INK_PRIMARY }}>
-            {entry.dataKey === 'revenue' ? formatCurrencyBRL(entry.value as number) : entry.value}
-          </strong>
-          <span style={{ color: INK_SECONDARY }}>{entry.name}</span>
-        </p>
-      ))}
+      <p style={{ margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+        <span style={{ display: 'inline-block', width: 12, height: 2, background: revenue.color }} />
+        <strong style={{ color: INK_PRIMARY }}>{formatCurrencyBRL(revenue.value as number)}</strong>
+        <span style={{ color: INK_SECONDARY }}>{revenue.name}</span>
+      </p>
     </div>
   )
 }
@@ -104,27 +89,8 @@ export function SalesChart({ orders }: SalesChartProps) {
           tick={{ fill: INK_MUTED, fontSize: 12 }}
           label={{ value: 'Faturamento (R$)', angle: -90, position: 'insideLeft', fill: INK_MUTED, fontSize: 12 }}
         />
-        <YAxis
-          yAxisId="orders"
-          orientation="right"
-          allowDecimals={false}
-          axisLine={{ stroke: AXIS_LINE }}
-          tickLine={{ stroke: AXIS_LINE }}
-          tick={{ fill: INK_MUTED, fontSize: 12 }}
-          label={{ value: 'Pedidos', angle: 90, position: 'insideRight', fill: INK_MUTED, fontSize: 12 }}
-        />
         <Tooltip content={<ChartTooltip />} />
-        <Legend wrapperStyle={{ color: INK_SECONDARY, fontSize: 12 }} />
         <Bar yAxisId="revenue" dataKey="revenue" name="Faturamento" fill={COLOR_REVENUE} barSize={24} radius={[4, 4, 0, 0]} />
-        <Line
-          yAxisId="orders"
-          dataKey="orderCount"
-          name="Pedidos"
-          type="monotone"
-          stroke={COLOR_ORDERS}
-          strokeWidth={2}
-          dot={{ r: 4, fill: COLOR_ORDERS }}
-        />
       </ComposedChart>
     </section>
   )
