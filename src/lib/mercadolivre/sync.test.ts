@@ -1,13 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { upsertOrder } from './sync'
+import { upsertOrder, backfillOrders } from './sync'
 import type { MercadoLivreOrder } from './client'
+import * as client from './client'
 
 function createFakeSupabase() {
   const orderUpsertCalls: unknown[] = []
   const itemsUpsertCalls: unknown[] = []
 
-  const client = {
+  const supabaseClient = {
     from(table: string) {
       if (table === 'orders') {
         return {
@@ -25,11 +26,16 @@ function createFakeSupabase() {
           },
         }
       }
+      if (table === 'sync_runs') {
+        return {
+          insert: async () => ({ error: null }),
+        }
+      }
       throw new Error(`Unexpected table: ${table}`)
     },
   }
 
-  return { client: client as unknown as SupabaseClient, orderUpsertCalls, itemsUpsertCalls }
+  return { client: supabaseClient as unknown as SupabaseClient, orderUpsertCalls, itemsUpsertCalls }
 }
 
 const sampleOrder: MercadoLivreOrder = {
@@ -60,5 +66,31 @@ describe('upsertOrder', () => {
       opts: { onConflict: 'order_id,ml_item_id' },
       data: [expect.objectContaining({ order_id: 'order-row-1', user_id: 'user-1', ml_item_id: 'MLB1' })],
     })
+  })
+})
+
+describe('backfillOrders', () => {
+  it('pages through search results and upserts every order', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    const searchOrdersMock = vi.spyOn(client, 'searchOrders')
+    searchOrdersMock.mockResolvedValueOnce({ orders: [sampleOrder], total: 2 })
+    searchOrdersMock.mockResolvedValueOnce({ orders: [{ ...sampleOrder, id: 556 }], total: 2 })
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+
+    const result = await backfillOrders(supabase, account, 12)
+
+    expect(result.processed).toBe(2)
+    expect(result.errors).toBe(0)
+    expect(orderUpsertCalls).toHaveLength(2)
   })
 })
