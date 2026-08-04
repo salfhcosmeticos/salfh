@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MercadoLivreOrder } from './client'
-import { getValidAccessToken, searchOrders } from './client'
+import { getValidAccessToken, searchOrders, getOrder } from './client'
 
 export interface StoredMercadoLivreAccount {
   id: string
@@ -148,4 +148,79 @@ export async function backfillOrders(
   const toDate = new Date().toISOString()
   const fromDate = new Date(Date.now() - monthsBack * 30 * 24 * 60 * 60 * 1000).toISOString()
   return syncOrdersInRange(supabase, account, fromDate, toDate, 'backfill')
+}
+
+export async function reconcileRecentOrders(
+  supabase: SupabaseClient,
+  account: StoredMercadoLivreAccount,
+  hoursBack: number
+): Promise<{ processed: number; errors: number }> {
+  const toDate = new Date().toISOString()
+  const fromDate = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString()
+  return syncOrdersInRange(supabase, account, fromDate, toDate, 'reconciliation')
+}
+
+export interface MercadoLivreWebhookPayload {
+  topic: string
+  resource: string
+  user_id: number
+}
+
+export async function handleMercadoLivreWebhook(
+  supabase: SupabaseClient,
+  payload: MercadoLivreWebhookPayload
+): Promise<void> {
+  if (payload.topic !== 'orders_v2') {
+    return
+  }
+
+  const orderId = Number(payload.resource.split('/').pop())
+
+  const { data: account, error } = await supabase
+    .from('marketplace_accounts')
+    .select('*')
+    .eq('ml_user_id', payload.user_id)
+    .eq('marketplace', 'mercado_livre')
+    .maybeSingle()
+
+  if (error || !account) {
+    return
+  }
+
+  const storedAccount: StoredMercadoLivreAccount = {
+    id: account.id,
+    userId: account.user_id,
+    mlUserId: account.ml_user_id,
+    accessToken: account.access_token,
+    refreshToken: account.refresh_token,
+    tokenExpiresAt: account.token_expires_at,
+  }
+
+  // A transient failure here (token refresh or the ML API call) must not
+  // throw past this point: the caller is the webhook route, and Mercado
+  // Livre retries deliveries on non-2xx responses. We record the failure in
+  // sync_runs and let the route respond normally, same as the fix applied
+  // to syncOrdersInRange for backfill/reconciliation.
+  let processed = 0
+  let errors = 0
+  let lastError: string | undefined
+
+  try {
+    const accessToken = await getValidAccessToken(
+      storedAccount,
+      await persistRefreshedTokens(supabase, storedAccount.id)
+    )
+    const order = await getOrder(accessToken, orderId)
+    await upsertOrder(supabase, storedAccount.id, storedAccount.userId, order)
+    processed = 1
+  } catch (err) {
+    errors = 1
+    lastError = err instanceof Error ? err.message : String(err)
+  }
+
+  await recordSyncRun(supabase, storedAccount.id, storedAccount.userId, 'webhook', {
+    processed,
+    errors,
+    lastError,
+  })
 }

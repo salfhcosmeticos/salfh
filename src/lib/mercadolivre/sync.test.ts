@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { upsertOrder, backfillOrders } from './sync'
+import { upsertOrder, backfillOrders, handleMercadoLivreWebhook, reconcileRecentOrders } from './sync'
 import type { MercadoLivreOrder } from './client'
 import * as client from './client'
 
@@ -40,6 +40,36 @@ function createFakeSupabase() {
   }
 
   return { client: supabaseClient as unknown as SupabaseClient, orderUpsertCalls, itemsUpsertCalls, syncRunInserts }
+}
+
+function createFakeSupabaseWithAccount() {
+  const base = createFakeSupabase()
+  const originalFrom = base.client.from.bind(base.client)
+  base.client.from = ((table: string) => {
+    if (table === 'marketplace_accounts') {
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: {
+                  id: 'account-1',
+                  user_id: 'user-1',
+                  ml_user_id: 999,
+                  access_token: 'token-abc',
+                  refresh_token: 'refresh-abc',
+                  token_expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                },
+                error: null,
+              }),
+            }),
+          }),
+        }),
+      }
+    }
+    return originalFrom(table)
+  }) as typeof base.client.from
+  return base
 }
 
 const sampleOrder: MercadoLivreOrder = {
@@ -155,5 +185,90 @@ describe('backfillOrders', () => {
       orders_processed: 0,
       last_error: 'token refresh failed',
     })
+  })
+})
+
+describe('handleMercadoLivreWebhook', () => {
+  it('ignores topics other than orders_v2', async () => {
+    const { client: supabase } = createFakeSupabase()
+    await expect(
+      handleMercadoLivreWebhook(supabase, { topic: 'messages', resource: '/orders/1', user_id: 999 })
+    ).resolves.toBeUndefined()
+  })
+
+  it('fetches and upserts the order for orders_v2 events', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabaseWithAccount()
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'getOrder').mockResolvedValue(sampleOrder)
+
+    await handleMercadoLivreWebhook(supabase, {
+      topic: 'orders_v2',
+      resource: '/orders/555',
+      user_id: 999,
+    })
+
+    expect(orderUpsertCalls).toHaveLength(1)
+  })
+
+  it('does not throw and still records a failed sync_runs row when getOrder fails', async () => {
+    const { client: supabase, orderUpsertCalls, syncRunInserts } = createFakeSupabaseWithAccount()
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'getOrder').mockRejectedValue(new Error('ML API unavailable'))
+
+    await expect(
+      handleMercadoLivreWebhook(supabase, { topic: 'orders_v2', resource: '/orders/555', user_id: 999 })
+    ).resolves.toBeUndefined()
+
+    expect(orderUpsertCalls).toHaveLength(0)
+    expect(syncRunInserts).toHaveLength(1)
+    expect(syncRunInserts[0]).toMatchObject({
+      account_id: 'account-1',
+      user_id: 'user-1',
+      run_type: 'webhook',
+      orders_processed: 0,
+      error_count: 1,
+      last_error: 'ML API unavailable',
+    })
+  })
+
+  it('does not throw and still records a failed sync_runs row when getValidAccessToken fails', async () => {
+    const { client: supabase, syncRunInserts } = createFakeSupabaseWithAccount()
+    vi.spyOn(client, 'getValidAccessToken').mockRejectedValue(new Error('token refresh failed'))
+    const getOrderMock = vi.spyOn(client, 'getOrder')
+
+    await expect(
+      handleMercadoLivreWebhook(supabase, { topic: 'orders_v2', resource: '/orders/555', user_id: 999 })
+    ).resolves.toBeUndefined()
+
+    expect(getOrderMock).not.toHaveBeenCalled()
+    expect(syncRunInserts).toHaveLength(1)
+    expect(syncRunInserts[0]).toMatchObject({
+      run_type: 'webhook',
+      orders_processed: 0,
+      error_count: 1,
+      last_error: 'token refresh failed',
+    })
+  })
+})
+
+describe('reconcileRecentOrders', () => {
+  it('searches only the recent time window and upserts results', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    const searchOrdersMock = vi.spyOn(client, 'searchOrders')
+    searchOrdersMock.mockResolvedValueOnce({ orders: [sampleOrder], total: 1 })
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+
+    const result = await reconcileRecentOrders(supabase, account, 2)
+    expect(result.processed).toBe(1)
+    expect(orderUpsertCalls).toHaveLength(1)
   })
 })
