@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exchangeCodeForToken } from '@/lib/mercadolivre/oauth'
-import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code')
@@ -8,18 +8,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/?ml_error=missing_code', request.url))
   }
 
-  const supabaseAuth = await createServerSupabaseClient()
-  const { data: { user } } = await supabaseAuth.auth.getUser()
-  if (!user) {
-    return NextResponse.redirect(new URL('/login', request.url))
+  const supabase = createServiceClient()
+  const { data: usersPage, error: usersError } = await supabase.auth.admin.listUsers()
+  const owner = usersPage?.users[0]
+  if (usersError || !owner) {
+    return NextResponse.redirect(new URL('/?ml_error=no_owner_user', request.url))
   }
 
   const tokens = await exchangeCodeForToken(code)
-  const supabase = createServiceClient()
 
   await supabase.from('marketplace_accounts').upsert(
     {
-      user_id: user.id,
+      user_id: owner.id,
       marketplace: 'mercado_livre',
       ml_user_id: tokens.mlUserId,
       access_token: tokens.accessToken,
