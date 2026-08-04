@@ -16,7 +16,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/?ml_error=no_owner_user', request.url))
   }
 
-  const tokens = await exchangeCodeForToken(code)
+  // A reused/expired code, a redirect_uri mismatch or an ML outage all surface
+  // here as a thrown error. Without this guard they become a raw 500 instead of
+  // the same friendly error redirect used by every other failure branch above.
+  let tokens
+  try {
+    tokens = await exchangeCodeForToken(code)
+  } catch (error) {
+    console.error('Mercado Livre token exchange failed:', error)
+    return NextResponse.redirect(new URL('/?ml_error=token_exchange_failed', request.url))
+  }
 
   const { data: accountRow, error: accountError } = await supabase
     .from('marketplace_accounts')
@@ -38,25 +47,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/?ml_error=save_failed', request.url))
   }
 
-  try {
-    await backfillOrders(
-      supabase,
-      {
-        id: accountRow.id,
-        userId: owner.id,
-        mlUserId: tokens.mlUserId,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        tokenExpiresAt: tokens.expiresAt,
-      },
-      12
-    )
-  } catch (error) {
-    // The account is already saved successfully at this point, so a backfill
-    // failure should not read to the user as a failed connection. Log and
-    // still redirect to the normal success URL.
+  // Fire-and-forget: a 12-month backfill pages at 50 orders/request with a
+  // per-order upsert, which can run for minutes — long enough for a reverse
+  // proxy to time out the redirect and turn a successful connection into a
+  // user-facing error. The account row is already saved, and backfillOrders
+  // records its own sync_runs row with success/failure, so the audit trail
+  // survives even though this route no longer waits for it.
+  void backfillOrders(
+    supabase,
+    {
+      id: accountRow.id,
+      userId: owner.id,
+      mlUserId: tokens.mlUserId,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      tokenExpiresAt: tokens.expiresAt,
+    },
+    12
+  ).catch((error) => {
     console.error('Mercado Livre backfill failed after connecting account:', error)
-  }
+  })
 
   return NextResponse.redirect(new URL('/?ml_connected=true', request.url))
 }
