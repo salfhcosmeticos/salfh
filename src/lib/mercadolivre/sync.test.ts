@@ -196,6 +196,28 @@ describe('handleMercadoLivreWebhook', () => {
     ).resolves.toBeUndefined()
   })
 
+  it('does not throw when resource is malformed (missing/null) on an orders_v2 payload', async () => {
+    const { client: supabase } = createFakeSupabase()
+
+    await expect(
+      handleMercadoLivreWebhook(
+        supabase,
+        { topic: 'orders_v2', resource: null, user_id: 999 } as unknown as {
+          topic: string
+          resource: string
+          user_id: number
+        }
+      )
+    ).resolves.toBeUndefined()
+
+    await expect(
+      handleMercadoLivreWebhook(
+        supabase,
+        { topic: 'orders_v2', user_id: 999 } as unknown as { topic: string; resource: string; user_id: number }
+      )
+    ).resolves.toBeUndefined()
+  })
+
   it('fetches and upserts the order for orders_v2 events', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabaseWithAccount()
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')

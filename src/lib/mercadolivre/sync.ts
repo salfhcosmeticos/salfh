@@ -170,7 +170,16 @@ export async function handleMercadoLivreWebhook(
   supabase: SupabaseClient,
   payload: MercadoLivreWebhookPayload
 ): Promise<void> {
-  if (payload.topic !== 'orders_v2') {
+  if (typeof payload?.topic !== 'string' || payload.topic !== 'orders_v2') {
+    return
+  }
+
+  // The payload is untrusted external input (no signature verification in
+  // this plan), so `resource` may be missing, null, or non-string. Bail out
+  // before parsing rather than letting `.split()` throw a TypeError that
+  // would propagate uncaught through the webhook route as a 500 — the same
+  // retry-storm outcome this task's graceful-degradation fix exists to avoid.
+  if (typeof payload.resource !== 'string') {
     return
   }
 
