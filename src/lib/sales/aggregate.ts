@@ -1,5 +1,21 @@
 import { format, startOfDay, startOfMonth, startOfWeek, startOfYear } from 'date-fns'
 
+/**
+ * Order statuses that count toward Faturamento / Ticket médio (owner decision).
+ * Cancelled and refunded orders stay visible in the orders table but must not
+ * inflate the revenue figures. Values are Mercado Livre's `status` field, stored
+ * verbatim by the client's `toOrder` mapping.
+ */
+export const REVENUE_STATUSES = ['paid', 'shipped', 'delivered'] as const
+
+export function isRevenueStatus(status: string): boolean {
+  return (REVENUE_STATUSES as readonly string[]).includes(status)
+}
+
+export function filterRevenueOrders<T extends { status: string }>(orders: T[]): T[] {
+  return orders.filter((order) => isRevenueStatus(order.status))
+}
+
 export type SalesGranularity = 'day' | 'week' | 'month' | 'year'
 
 export interface SalesPoint {

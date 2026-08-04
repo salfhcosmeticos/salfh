@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aggregateSales } from './aggregate'
+import { aggregateSales, filterRevenueOrders, isRevenueStatus, REVENUE_STATUSES } from './aggregate'
 
 const orders = [
   { orderDate: '2026-08-01T10:00:00.000Z', totalAmount: 100 },
@@ -49,5 +49,42 @@ describe('aggregateSales', () => {
 
   it('returns an empty array for no orders', () => {
     expect(aggregateSales([], 'day')).toEqual([])
+  })
+})
+
+describe('revenue status filtering', () => {
+  it('counts only paid, shipped and delivered as revenue', () => {
+    expect(REVENUE_STATUSES).toEqual(['paid', 'shipped', 'delivered'])
+    expect(isRevenueStatus('paid')).toBe(true)
+    expect(isRevenueStatus('shipped')).toBe(true)
+    expect(isRevenueStatus('delivered')).toBe(true)
+  })
+
+  it('excludes cancelled, refunded and other non-revenue statuses', () => {
+    expect(isRevenueStatus('cancelled')).toBe(false)
+    expect(isRevenueStatus('refunded')).toBe(false)
+    expect(isRevenueStatus('payment_required')).toBe(false)
+    expect(isRevenueStatus('payment_in_process')).toBe(false)
+    expect(isRevenueStatus('invalid')).toBe(false)
+    expect(isRevenueStatus('')).toBe(false)
+  })
+
+  it('drops non-revenue orders so they cannot inflate revenue totals', () => {
+    const rows = [
+      { id: '1', status: 'paid', totalAmount: 100 },
+      { id: '2', status: 'cancelled', totalAmount: 999 },
+      { id: '3', status: 'delivered', totalAmount: 50 },
+      { id: '4', status: 'refunded', totalAmount: 999 },
+      { id: '5', status: 'shipped', totalAmount: 25 },
+    ]
+
+    const revenueRows = filterRevenueOrders(rows)
+
+    expect(revenueRows.map((row) => row.id)).toEqual(['1', '3', '5'])
+    expect(revenueRows.reduce((sum, row) => sum + row.totalAmount, 0)).toBe(175)
+  })
+
+  it('returns an empty list when no order qualifies', () => {
+    expect(filterRevenueOrders([{ status: 'cancelled' }])).toEqual([])
   })
 })
