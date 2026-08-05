@@ -49,7 +49,12 @@ export function AppSidebar() {
                       </Link>
                     </SidebarMenuButton>
                   ) : (
-                    <SidebarMenuButton disabled aria-disabled="true" tooltip={`${item.label} (em breve)`}>
+                    <SidebarMenuButton
+                      aria-disabled="true"
+                      onClick={(event) => event.preventDefault()}
+                      className="opacity-50"
+                      tooltip={`${item.label} (em breve)`}
+                    >
                       <item.icon className="h-4 w-4" />
                       <span>{item.label}</span>
                       <span className="ml-auto text-xs text-muted-foreground">em breve</span>

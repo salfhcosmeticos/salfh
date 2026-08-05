@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ConnectMercadoLivreButton } from '@/components/ConnectMercadoLivreButton'
 import { VendasDashboardClient } from '@/components/VendasDashboardClient'
@@ -16,23 +17,26 @@ export default async function HomePage() {
 
   if (!user) {
     return (
-      <main className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2">
         <h1 className="text-lg font-semibold">Dashboard de Vendas</h1>
         <p className="text-sm text-muted-foreground">Faça login para ver seus dados.</p>
-      </main>
+        <Link href="/login" className="text-sm underline underline-offset-4">
+          Entrar
+        </Link>
+      </div>
     )
   }
 
   const { rows, error } = await fetchDashboardOrders(supabase)
 
   return (
-    <main className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Dashboard de Vendas</h1>
         <ConnectMercadoLivreButton />
       </div>
       {error ? <p className="text-sm text-destructive">Não foi possível carregar seus pedidos. Tente novamente.</p> : null}
       <VendasDashboardClient initialOrders={rows} />
-    </main>
+    </div>
   )
 }
