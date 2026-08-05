@@ -1,9 +1,11 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Bar, CartesianGrid, ComposedChart, Tooltip, type TooltipProps, XAxis, YAxis } from 'recharts'
+import { Bar, CartesianGrid, ComposedChart, ResponsiveContainer, Tooltip, type TooltipProps, XAxis, YAxis } from 'recharts'
 import { aggregateSales, type SalesGranularity, type SalesPoint } from '@/lib/sales/aggregate'
 import { formatCurrencyBRL } from '@/lib/format'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 interface SalesChartProps {
   orders: { orderDate: string; totalAmount: number }[]
@@ -19,7 +21,7 @@ const GRANULARITY_LABELS: Record<SalesGranularity, string> = {
 // Validated categorical palette (dataviz skill, references/palette.md).
 // Single series (revenue) → slot 1 (blue). Order count was dropped from
 // this chart (owner decision, see task-11-report.md) in favor of a single
-// left-axis bar chart; the total is already shown in SummaryCards above.
+// left-axis bar chart; the total is already shown in the KPI cards above.
 const COLOR_REVENUE = '#2a78d6' // categorical slot 1 (blue)
 
 // Chart chrome tokens (dataviz skill, references/palette.md), light surface.
@@ -60,38 +62,45 @@ export function SalesChart({ orders }: SalesChartProps) {
   const data = useMemo<SalesPoint[]>(() => aggregateSales(orders, granularity), [orders, granularity])
 
   return (
-    <section>
-      <div role="group" aria-label="Granularidade do gráfico">
-        {(Object.keys(GRANULARITY_LABELS) as SalesGranularity[]).map((option) => (
-          <button
-            key={option}
-            type="button"
-            aria-pressed={granularity === option}
-            onClick={() => setGranularity(option)}
-          >
-            {GRANULARITY_LABELS[option]}
-          </button>
-        ))}
-      </div>
-      <ComposedChart width={720} height={360} data={data}>
-        <CartesianGrid stroke={GRID_LINE} strokeDasharray="0" vertical={false} />
-        <XAxis
-          dataKey="period"
-          axisLine={{ stroke: AXIS_LINE }}
-          tickLine={{ stroke: AXIS_LINE }}
-          tick={{ fill: INK_MUTED, fontSize: 12 }}
-        />
-        <YAxis
-          yAxisId="revenue"
-          tickFormatter={(value) => formatCurrencyBRL(value)}
-          axisLine={{ stroke: AXIS_LINE }}
-          tickLine={{ stroke: AXIS_LINE }}
-          tick={{ fill: INK_MUTED, fontSize: 12 }}
-          label={{ value: 'Faturamento (R$)', angle: -90, position: 'insideLeft', fill: INK_MUTED, fontSize: 12 }}
-        />
-        <Tooltip content={<ChartTooltip />} />
-        <Bar yAxisId="revenue" dataKey="revenue" name="Faturamento" fill={COLOR_REVENUE} barSize={24} radius={[4, 4, 0, 0]} />
-      </ComposedChart>
-    </section>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="text-sm font-medium">Faturamento</CardTitle>
+        <ToggleGroup
+          type="single"
+          value={granularity}
+          onValueChange={(value) => value && setGranularity(value as SalesGranularity)}
+          aria-label="Granularidade do gráfico"
+        >
+          {(Object.keys(GRANULARITY_LABELS) as SalesGranularity[]).map((option) => (
+            <ToggleGroupItem key={option} value={option} aria-label={GRANULARITY_LABELS[option]}>
+              {GRANULARITY_LABELS[option]}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={360}>
+          <ComposedChart data={data}>
+            <CartesianGrid stroke={GRID_LINE} strokeDasharray="0" vertical={false} />
+            <XAxis
+              dataKey="period"
+              axisLine={{ stroke: AXIS_LINE }}
+              tickLine={{ stroke: AXIS_LINE }}
+              tick={{ fill: INK_MUTED, fontSize: 12 }}
+            />
+            <YAxis
+              yAxisId="revenue"
+              tickFormatter={(value) => formatCurrencyBRL(value)}
+              axisLine={{ stroke: AXIS_LINE }}
+              tickLine={{ stroke: AXIS_LINE }}
+              tick={{ fill: INK_MUTED, fontSize: 12 }}
+              label={{ value: 'Faturamento (R$)', angle: -90, position: 'insideLeft', fill: INK_MUTED, fontSize: 12 }}
+            />
+            <Tooltip content={<ChartTooltip />} />
+            <Bar yAxisId="revenue" dataKey="revenue" name="Faturamento" fill={COLOR_REVENUE} barSize={24} radius={[4, 4, 0, 0]} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
   )
 }
