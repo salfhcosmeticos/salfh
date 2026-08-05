@@ -1,9 +1,7 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { ConnectMercadoLivreButton } from '@/components/ConnectMercadoLivreButton'
-import { SummaryCards } from '@/components/SummaryCards'
-import { OrdersTable } from '@/components/OrdersTable'
-import { SalesChart } from '@/components/SalesChart'
-import { filterRevenueOrders } from '@/lib/sales/aggregate'
+import { VendasDashboardClient } from '@/components/VendasDashboardClient'
+import { fetchDashboardOrders } from '@/lib/sales/fetchOrders'
 
 export default async function HomePage() {
   const supabase = await createServerSupabaseClient()
@@ -18,48 +16,23 @@ export default async function HomePage() {
 
   if (!user) {
     return (
-      <main>
-        Dashboard de Vendas
-        <p>Faça login para ver seus dados.</p>
+      <main className="flex flex-col gap-2">
+        <h1 className="text-lg font-semibold">Dashboard de Vendas</h1>
+        <p className="text-sm text-muted-foreground">Faça login para ver seus dados.</p>
       </main>
     )
   }
 
-  const { data: orders, error } = await supabase
-    .from('orders')
-    .select('id, status, total_amount, order_date, order_items(title)')
-    .order('order_date', { ascending: false })
-
-  if (error) {
-    console.error('Falha ao carregar pedidos no dashboard:', error)
-  }
-
-  const rows = (orders ?? []).map((order) => ({
-    id: order.id,
-    status: order.status,
-    totalAmount: order.total_amount,
-    orderDate: order.order_date,
-    itemsSummary: (order.order_items ?? []).map((item: { title: string }) => item.title).join(', '),
-  }))
-
-  // Only paid/shipped/delivered orders count as revenue — cancelled and
-  // refunded ones would otherwise inflate Faturamento and Ticket médio.
-  // OrdersTable deliberately keeps showing every order.
-  const revenueRows = filterRevenueOrders(rows)
-  const revenueTotal = revenueRows.reduce((sum, row) => sum + row.totalAmount, 0)
-  const orderCount = revenueRows.length
-  const averageTicket = orderCount > 0 ? revenueTotal / orderCount : 0
+  const { rows, error } = await fetchDashboardOrders(supabase)
 
   return (
-    <main>
-      Dashboard de Vendas
-      <ConnectMercadoLivreButton />
-      {error ? <p>Não foi possível carregar seus pedidos. Tente novamente.</p> : null}
-      <SummaryCards revenueTotal={revenueTotal} orderCount={orderCount} averageTicket={averageTicket} />
-      <SalesChart
-        orders={revenueRows.map((row) => ({ orderDate: row.orderDate, totalAmount: row.totalAmount }))}
-      />
-      <OrdersTable orders={rows} />
+    <main className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Dashboard de Vendas</h1>
+        <ConnectMercadoLivreButton />
+      </div>
+      {error ? <p className="text-sm text-destructive">Não foi possível carregar seus pedidos. Tente novamente.</p> : null}
+      <VendasDashboardClient initialOrders={rows} />
     </main>
   )
 }
