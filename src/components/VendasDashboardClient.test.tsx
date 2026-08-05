@@ -4,6 +4,7 @@ import { VendasDashboardClient } from './VendasDashboardClient'
 import { formatCurrencyBRL } from '@/lib/format'
 import * as browserClient from '@/lib/supabase/browser'
 import * as fetchOrdersModule from '@/lib/sales/fetchOrders'
+import type { DashboardOrdersResult } from '@/lib/sales/fetchOrders'
 
 // SalesChart renders recharts' ResponsiveContainer, which observes its
 // container with ResizeObserver — a browser API jsdom doesn't implement.
@@ -97,6 +98,57 @@ describe('VendasDashboardClient', () => {
       expectCurrencyRendered(350)
     })
     expect(screen.getByTestId('last-updated').textContent).not.toBe(before)
+  })
+
+  it('applies only the most recently issued refetch when responses resolve out of order', async () => {
+    // Reproduces the race the two-table (orders + order_items) subscription
+    // was meant to eliminate: a single new order fires an `orders` event and
+    // an `order_items` event milliseconds apart, so two refetches can be in
+    // flight at once. Here call A (issued first, simulating the `orders`
+    // event landing before the `order_items` upsert commits) is deliberately
+    // resolved AFTER call B (issued second, simulating the `order_items`
+    // event, with the complete row). Without a request-ordering guard, A's
+    // stale response would land last and overwrite B's correct one.
+    let resolveFirst!: (value: DashboardOrdersResult) => void
+    let resolveSecond!: (value: DashboardOrdersResult) => void
+    const firstCall = new Promise<DashboardOrdersResult>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondCall = new Promise<DashboardOrdersResult>((resolve) => {
+      resolveSecond = resolve
+    })
+
+    const fetchSpy = vi.spyOn(fetchOrdersModule, 'fetchDashboardOrders')
+    fetchSpy.mockImplementationOnce(() => firstCall)
+    fetchSpy.mockImplementationOnce(() => secondCall)
+
+    render(<VendasDashboardClient initialOrders={[]} />)
+
+    // Two events firing in quick succession -> two overlapping refetch() calls.
+    changeHandler({})
+    changeHandler({})
+
+    // Later-issued call (B) resolves first, with the correct/complete data.
+    resolveSecond({
+      rows: [{ id: '1', status: 'paid', totalAmount: 100, orderDate: '2026-08-04T09:00:00.000Z', itemsSummary: 'Produto A' }],
+      error: false,
+    })
+    await waitFor(() => {
+      expectCurrencyRendered(100)
+    })
+
+    // Earlier-issued call (A) resolves last, with stale/incomplete data. It
+    // must be discarded, not applied on top of B's already-correct state.
+    resolveFirst({
+      rows: [{ id: '1', status: 'paid', totalAmount: 999, orderDate: '2026-08-04T09:00:00.000Z', itemsSummary: '' }],
+      error: false,
+    })
+
+    // Flush microtasks so the (would-be, buggy) update has a chance to apply.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expectCurrencyRendered(100)
+    expect(screen.queryByText(currencyText(999))).toBeNull()
   })
 
   it('keeps the last known snapshot when a refetch fails', async () => {
