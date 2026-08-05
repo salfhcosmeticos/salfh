@@ -34,7 +34,9 @@ const NAV_ITEMS: NavItem[] = [
 export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="px-3 py-2 text-sm font-semibold">Dashboard Marketplaces</SidebarHeader>
+      <SidebarHeader className="px-3 py-2 text-sm font-semibold">
+        <span className="group-data-[collapsible=icon]:hidden">Dashboard Marketplaces</span>
+      </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
@@ -53,6 +55,7 @@ export function AppSidebar() {
                       aria-disabled="true"
                       onClick={(event) => event.preventDefault()}
                       className="opacity-50"
+                      style={{ pointerEvents: 'auto' }}
                       tooltip={`${item.label} (em breve)`}
                     >
                       <item.icon className="h-4 w-4" />

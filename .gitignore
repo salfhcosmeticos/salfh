@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .env
+.env*.local
 .superpowers/
 next-env.d.ts
 *.tsbuildinfo
