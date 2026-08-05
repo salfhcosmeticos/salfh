@@ -1,4 +1,16 @@
-import { format, startOfDay, startOfMonth, startOfWeek, startOfYear } from 'date-fns'
+import {
+  format,
+  isSameDay,
+  isSameISOWeek,
+  isSameMonth,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+  startOfYear,
+  subDays,
+  subMonths,
+  subWeeks,
+} from 'date-fns'
 
 /**
  * Order statuses that count toward Faturamento / Ticket médio (owner decision).
@@ -49,4 +61,51 @@ export function aggregateSales(orders: OrderForAggregation[], granularity: Sales
   }
 
   return Array.from(buckets.values()).sort((a, b) => a.period.localeCompare(b.period))
+}
+
+export interface PeriodComparison {
+  current: number
+  previous: number
+  changePct: number | null // null = previous period had zero revenue, no % shown
+}
+
+export interface RevenueSummary {
+  total: number
+  today: PeriodComparison
+  week: PeriodComparison
+  month: PeriodComparison
+}
+
+function sumWhere(orders: OrderForAggregation[], predicate: (date: Date) => boolean): number {
+  return orders
+    .filter((order) => predicate(new Date(order.orderDate)))
+    .reduce((sum, order) => sum + order.totalAmount, 0)
+}
+
+function comparePeriods(current: number, previous: number): PeriodComparison {
+  return { current, previous, changePct: previous === 0 ? null : ((current - previous) / previous) * 100 }
+}
+
+export function summarizeRevenue(orders: OrderForAggregation[], now: Date = new Date()): RevenueSummary {
+  const total = orders.reduce((sum, order) => sum + order.totalAmount, 0)
+
+  const yesterday = subDays(now, 1)
+  const lastWeek = subWeeks(now, 1)
+  const lastMonth = subMonths(now, 1)
+
+  return {
+    total,
+    today: comparePeriods(
+      sumWhere(orders, (date) => isSameDay(date, now)),
+      sumWhere(orders, (date) => isSameDay(date, yesterday))
+    ),
+    week: comparePeriods(
+      sumWhere(orders, (date) => isSameISOWeek(date, now)),
+      sumWhere(orders, (date) => isSameISOWeek(date, lastWeek))
+    ),
+    month: comparePeriods(
+      sumWhere(orders, (date) => isSameMonth(date, now)),
+      sumWhere(orders, (date) => isSameMonth(date, lastMonth))
+    ),
+  }
 }

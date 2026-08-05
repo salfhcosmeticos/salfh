@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aggregateSales, filterRevenueOrders, isRevenueStatus, REVENUE_STATUSES } from './aggregate'
+import { aggregateSales, filterRevenueOrders, isRevenueStatus, summarizeRevenue, REVENUE_STATUSES } from './aggregate'
 
 const orders = [
   { orderDate: '2026-08-01T10:00:00.000Z', totalAmount: 100 },
@@ -86,5 +86,57 @@ describe('revenue status filtering', () => {
 
   it('returns an empty list when no order qualifies', () => {
     expect(filterRevenueOrders([{ status: 'cancelled' }])).toEqual([])
+  })
+})
+
+describe('summarizeRevenue', () => {
+  const now = new Date('2026-08-04T12:00:00.000Z') // Tuesday
+
+  it('splits today vs yesterday', () => {
+    const orders = [
+      { orderDate: '2026-08-04T09:00:00.000Z', totalAmount: 100 }, // today
+      { orderDate: '2026-08-03T09:00:00.000Z', totalAmount: 40 }, // yesterday
+      { orderDate: '2026-08-02T09:00:00.000Z', totalAmount: 999 }, // neither
+    ]
+    const summary = summarizeRevenue(orders, now)
+    expect(summary.today).toEqual({ current: 100, previous: 40, changePct: 150 })
+  })
+
+  it('compares the current ISO week (Monday start) to the previous week', () => {
+    const orders = [
+      { orderDate: '2026-08-03T09:00:00.000Z', totalAmount: 100 }, // Mon this week
+      { orderDate: '2026-08-04T09:00:00.000Z', totalAmount: 50 }, // Tue this week
+      { orderDate: '2026-07-27T09:00:00.000Z', totalAmount: 60 }, // Mon last week
+      { orderDate: '2026-07-20T09:00:00.000Z', totalAmount: 999 }, // two weeks ago
+    ]
+    const summary = summarizeRevenue(orders, now)
+    expect(summary.week).toEqual({ current: 150, previous: 60, changePct: 150 })
+  })
+
+  it('compares the current calendar month to the previous month, not a different year with the same month number', () => {
+    const orders = [
+      { orderDate: '2026-08-01T09:00:00.000Z', totalAmount: 100 },
+      { orderDate: '2026-08-04T09:00:00.000Z', totalAmount: 50 },
+      { orderDate: '2026-07-15T09:00:00.000Z', totalAmount: 200 },
+      { orderDate: '2025-08-15T09:00:00.000Z', totalAmount: 999 }, // same month number, wrong year
+    ]
+    const summary = summarizeRevenue(orders, now)
+    expect(summary.month).toEqual({ current: 150, previous: 200, changePct: -25 })
+  })
+
+  it('returns changePct: null when the previous period had zero revenue', () => {
+    const orders = [{ orderDate: '2026-08-04T09:00:00.000Z', totalAmount: 100 }]
+    const summary = summarizeRevenue(orders, now)
+    expect(summary.today).toEqual({ current: 100, previous: 0, changePct: null })
+  })
+
+  it('returns all-zero totals for an empty order list', () => {
+    const summary = summarizeRevenue([], now)
+    expect(summary).toEqual({
+      total: 0,
+      today: { current: 0, previous: 0, changePct: null },
+      week: { current: 0, previous: 0, changePct: null },
+      month: { current: 0, previous: 0, changePct: null },
+    })
   })
 })
