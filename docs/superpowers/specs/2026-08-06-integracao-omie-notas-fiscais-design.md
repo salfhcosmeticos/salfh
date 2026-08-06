@@ -1,4 +1,4 @@
-# Integração com a Omie para NCM da nota fiscal — design
+# Integração com a Omie para NCM da nota fiscal + ICMS por CNPJ — design
 
 **Date:** 2026-08-06
 **Status:** approved by owner, ready for spec review
@@ -8,12 +8,13 @@
 
 Get the NCM (and invoice number) for each Mercado Livre order's product(s) so the "Margem de contribuição" page can compute ICMS debit and drop the "aguardando XML" state. The data comes from the invoice (nota fiscal) Omie already issues for every Mercado Livre sale — not from a file, just the specific fields the margin calculation needs (NCM per item; invoice number). No XML file is stored.
 
+While designing this, the owner also clarified that the ICMS rate table itself (`calculateMargin.ts`) is only correct for sales issued by the matriz CNPJ — Fulfillment sales are issued by a different CNPJ, under different ICMS rules, always shipped from São Paulo. Since both this NCM lookup and that rate choice depend on the exact same signal (whether the order is Fulfillment), this spec covers both.
+
 ## Non-goals
 
 - **Storing the XML or DANFE file.** Confirmed with the owner: only the extracted fields (NCM, invoice number) are needed, not the file itself. This lets the integration use Omie's structured `ConsultarNF`/`ListarNF` responses directly, with no XML download or parsing step.
-- **Changing the ICMS/PIS/COFINS calculation.** The owner explicitly wants to keep `calculateMargin.ts`'s own rate table for ICMS debit and the reference-only credit columns, even though Omie's invoice carries its own computed tax values. Those credits apply to Mercado Livre commission and shipping — costs that never appear on the nota fiscal — so the two are not interchangeable. `calculateMargin.ts` is unchanged by this spec.
+- **Changing what the ICMS/PIS/COFINS credits apply to, or folding them into net profit.** The reference-only credit columns (PIS, COFINS, ICMS-on-shipping) keep the same formula and stay reference-only for both CNPJs — only the ICMS **debit** rate table gets a second variant (below). Those credits apply to Mercado Livre commission and shipping, which never appear on the nota fiscal, so they're unaffected by which CNPJ issued the sale.
 - **A settings UI for the Omie credentials.** Both Omie accounts' API keys are environment variables, following the same pattern as `SUPABASE_SERVICE_ROLE_KEY` — set once, not editable from the dashboard.
-- **Persisting which CNPJ/Omie account an order resolved to.** `logistic_type` is read from data already fetched per order and used in-memory to pick which Omie account to query; it is not stored. If the owner later wants this visible for auditing, that's a small additive change (one nullable column), not a redesign.
 - **Other marketplaces.** Unchanged from the parent spec — Mercado Livre only.
 
 ## Architecture
@@ -30,6 +31,44 @@ The sync already calls `GET /shipments/{shippingId}` per order (`getShipmentAddr
 ```ts
 const omieAccount = shipment.logisticType === 'fulfillment' ? omieFilial : omieMatriz
 ```
+
+**This value is also needed later, at margin-calculation time** (the "Margem de contribuição" page reads stored `orders` rows, long after the sync's in-memory shipment response is gone) — see "ICMS rate table depends on the CNPJ" below. So `logistic_type` is stored, not just used transiently during sync:
+
+- **New column on `orders`:** `logistic_type text` — the raw value from the shipment response (e.g. `'fulfillment'`, `'self_service'`, `'drop_off'`), nullable until the shipment has been fetched (same lifecycle as `destination_state`/`destination_city`, which come from the same call).
+
+### ICMS rate table depends on which CNPJ issued the sale
+
+The owner's ICMS rate table in `calculateMargin.ts` (from the parent spec) is only correct for the matriz CNPJ. Fulfillment sales are issued by the filial CNPJ, always shipped from a São Paulo warehouse (confirmed against a real Fulfillment shipment's `sender_address` this session), under a different, simpler rule — no NCM dependency, no exemption:
+
+| Origem → Destino | Alíquota |
+|---|---|
+| SP → SP | 18% |
+| SP → PR, RS, SC, RJ, MG | 12% |
+| SP → qualquer outro estado | 7% |
+
+`icmsDebitRate` gains a required `cnpj` parameter and dispatches to one of two rate functions — the existing matriz table (unchanged) or the new filial table:
+
+```ts
+export type BillingCnpj = 'matriz' | 'filial'
+
+function icmsDebitRateMatriz(destinationState: string, ncm: string | null): number | null {
+  // unchanged from the parent spec: PR+exempt cosmetic NCM → 0%, PR otherwise → 19.5%,
+  // MG/SP/RJ/SC/RS → 12%, everything else → 7%
+}
+
+function icmsDebitRateFilial(destinationState: string): number | null {
+  if (!VALID_UFS.includes(destinationState)) return null
+  if (destinationState === 'SP') return 0.18
+  if (['PR', 'RS', 'SC', 'RJ', 'MG'].includes(destinationState)) return 0.12
+  return 0.07
+}
+
+export function icmsDebitRate(cnpj: BillingCnpj, destinationState: string, ncm: string | null): number | null {
+  return cnpj === 'filial' ? icmsDebitRateFilial(destinationState) : icmsDebitRateMatriz(destinationState, ncm)
+}
+```
+
+`OrderMarginInput` gains a `cnpj: BillingCnpj` field, derived the same way as the Omie account routing: `logistic_type === 'fulfillment' ? 'filial' : 'matriz'`. The margin page (`page.tsx`) computes this once per order from the newly-stored `orders.logistic_type` and passes it through — the same derivation logic used at sync time for Omie routing, just evaluated later, from the stored column instead of the live shipment response.
 
 ### Credentials
 
@@ -72,13 +111,14 @@ No new UI. This plugs into the sync pipeline that already runs automatically —
 ## Testing
 
 - `src/lib/omie/client.ts`: unit tests with mocked `fetch`, covering: `ConsultarNF` match, `ConsultarNF` miss → `ListarNF` fallback match, both miss (returns null, does not throw), and one HTTP-error case per call (mapped to a thrown error the sync layer catches per-order, matching the existing Mercado Livre client's error convention).
-- `sync.ts`: extend the existing NCM-matching tests with the Omie lookup mocked in place of the old Mercado Livre fiscal-document mock — same fixtures (`product_code`/`sellerSku`), just a different source function. Add a case for `logistic_type: 'fulfillment'` routing to the filial account vs. any other value routing to matriz.
+- `sync.ts`: extend the existing NCM-matching tests with the Omie lookup mocked in place of the old Mercado Livre fiscal-document mock — same fixtures (`product_code`/`sellerSku`), just a different source function. Add a case for `logistic_type: 'fulfillment'` routing to the filial account vs. any other value routing to matriz, and confirm `orders.logistic_type` is persisted from the shipment response.
 - `retryPendingFiscalDocuments`: existing test coverage (retry behavior, age window, partial-batch-failure isolation) re-pointed at the Omie lookup mock instead of the Mercado Livre one; behavior itself is unchanged so no new cases are needed there.
+- `calculateMargin.ts`: new `icmsDebitRateFilial` cases mirroring the existing matriz coverage — SP→SP (18%), each of PR/RS/SC/RJ/MG (12%), a non-listed state (7%), and an invalid/unrecognized UF (null, same as matriz). Add a `calculateOrderMargin` case confirming `cnpj: 'filial'` selects the filial table and `cnpj: 'matriz'` keeps today's behavior unchanged (including the PR cosmetic-NCM exemption, which only exists on the matriz side).
 
 ## Rollout
 
 1. Retrieve both Omie accounts' App Key/App Secret and set the four environment variables locally and in production. The owner already has these; no new account setup needed.
 2. Before writing the parsing code, make one real `ConsultarNF` call (either account) against a known real invoice and inspect the raw response to confirm field names/nesting — the one open unconfirmed detail in this spec, flagged above.
 3. Confirm whether `cCodNFInt` is actually populated with the Mercado Livre order number on real invoices, to know whether the `ListarNF` fallback is the common path or a rare one — informs how much test/tuning attention the fallback's date window deserves.
-4. No schema migration needed — this spec reuses `orders.nf_number`, `orders.nf_fetched_at`, and `order_items.ncm`, all added by the prior margin spec.
+4. One small migration: add nullable `orders.logistic_type text`. Everything else reuses `orders.nf_number`, `orders.nf_fetched_at`, and `order_items.ncm`, already added by the prior margin spec.
 5. Ships the same way as prior work: commits to `main` (not pushed to `origin` until the owner asks), deployed via the existing EasyPanel pipeline once verified locally. No changes to the read-only marketplace-API constraint — Omie calls added here are reads only (`ConsultarNF`/`ListarNF`), same as every Mercado Livre call in this project.
