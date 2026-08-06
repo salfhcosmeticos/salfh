@@ -52,6 +52,7 @@ export interface MercadoLivreOrderItem {
   quantity: number
   unitPrice: number
   saleFee: number
+  sellerSku: string | null
 }
 
 export interface MercadoLivreOrder {
@@ -72,7 +73,7 @@ interface MercadoLivreOrderResponse {
   currency_id: string
   date_created: string
   order_items: {
-    item: { id: string; title: string }
+    item: { id: string; title: string; seller_custom_field?: string | null }
     quantity: number
     unit_price: number
     sale_fee?: number
@@ -94,6 +95,12 @@ function toOrder(response: MercadoLivreOrderResponse): MercadoLivreOrder {
       quantity: entry.quantity,
       unitPrice: entry.unit_price,
       saleFee: entry.sale_fee ?? 0,
+      // The SKU the seller sees on their own Mercado Livre order page (e.g.
+      // "SKU SF9004") - available immediately from the order, unlike NCM
+      // which only exists once the invoice XML is fetched. This is also the
+      // same code the seller's ERP (OMIE) prints as "CÓDIGO PRODUTO" on the
+      // NF-e, so it doubles as the reliable join key for NCM matching.
+      sellerSku: entry.item.seller_custom_field ?? null,
     })),
     shippingId: response.shipping?.id ?? null,
     salesChannel: response.tags?.[0] ?? null,

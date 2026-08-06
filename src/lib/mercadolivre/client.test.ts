@@ -63,7 +63,12 @@ describe('getOrder', () => {
         currency_id: 'BRL',
         date_created: '2026-08-01T10:00:00.000-04:00',
         order_items: [
-          { item: { id: 'MLB1', title: 'Produto Teste' }, quantity: 2, unit_price: 99.95, sale_fee: 18.5 },
+          {
+            item: { id: 'MLB1', title: 'Produto Teste', seller_custom_field: 'SF9004' },
+            quantity: 2,
+            unit_price: 99.95,
+            sale_fee: 18.5,
+          },
         ],
         shipping: { id: 987654 },
         tags: ['catalog_listing_eligible'],
@@ -77,13 +82,34 @@ describe('getOrder', () => {
       totalAmount: 199.9,
       currencyId: 'BRL',
       dateCreated: '2026-08-01T10:00:00.000-04:00',
-      items: [{ mlItemId: 'MLB1', title: 'Produto Teste', quantity: 2, unitPrice: 99.95, saleFee: 18.5 }],
+      items: [
+        { mlItemId: 'MLB1', title: 'Produto Teste', quantity: 2, unitPrice: 99.95, saleFee: 18.5, sellerSku: 'SF9004' },
+      ],
       shippingId: 987654,
       salesChannel: 'catalog_listing_eligible',
     })
     expect(order.items[0].saleFee).toBe(18.5)
+    expect(order.items[0].sellerSku).toBe('SF9004')
     expect(order.shippingId).toBe(987654)
     expect(order.salesChannel).toBe('catalog_listing_eligible')
+  })
+
+  it('maps sellerSku to null when the item has no seller_custom_field', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 124,
+        status: 'paid',
+        total_amount: 50,
+        currency_id: 'BRL',
+        date_created: '2026-08-01T10:00:00.000-04:00',
+        order_items: [{ item: { id: 'MLB2', title: 'Sem SKU' }, quantity: 1, unit_price: 50, sale_fee: 5 }],
+        shipping: null,
+      }),
+    }) as unknown as typeof fetch
+
+    const order = await getOrder('token-123', 124)
+    expect(order.items[0].sellerSku).toBeNull()
   })
 })
 

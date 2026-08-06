@@ -21,7 +21,7 @@ interface OrderRow {
   shippingOrFeeAmount: number
   shippingOrFeeType: 'frete' | 'taxa_fixa'
   nfPending: boolean
-  items: { itemValue: number; ncm: string | null; mlItemId: string; title: string; quantity: number }[]
+  items: { itemValue: number; ncm: string | null; mlItemId: string; productCode: string | null; title: string; quantity: number }[]
 }
 
 export default async function MargemContribuicaoPage() {
@@ -44,7 +44,7 @@ export default async function MargemContribuicaoPage() {
     supabase
       .from('orders')
       .select(
-        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, buyer_name, sales_channel, nf_number, nf_fetched_at, order_items(ml_item_id, title, quantity, unit_price, ncm)'
+        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, buyer_name, sales_channel, nf_number, nf_fetched_at, order_items(ml_item_id, product_code, title, quantity, unit_price, ncm)'
       )
       .order('order_date', { ascending: false }),
     listProductCosts(supabase),
@@ -64,10 +64,20 @@ export default async function MargemContribuicaoPage() {
     shippingOrFeeAmount: (order.shipping_or_fee_amount as number | null) ?? 0,
     shippingOrFeeType: (order.shipping_or_fee_type as 'frete' | 'taxa_fixa' | null) ?? 'taxa_fixa',
     nfPending: order.nf_fetched_at === null,
-    items: ((order.order_items ?? []) as { ml_item_id: string; title: string; quantity: number; unit_price: number; ncm: string | null }[]).map((item) => ({
+    items: (
+      (order.order_items ?? []) as {
+        ml_item_id: string
+        product_code: string | null
+        title: string
+        quantity: number
+        unit_price: number
+        ncm: string | null
+      }[]
+    ).map((item) => ({
       itemValue: item.unit_price * item.quantity,
       ncm: item.ncm,
       mlItemId: item.ml_item_id,
+      productCode: item.product_code,
       title: item.title,
       quantity: item.quantity,
     })),
@@ -75,10 +85,12 @@ export default async function MargemContribuicaoPage() {
 
   const results = rows.map((row) => {
     const productCost = row.items.reduce((sum, item) => {
-      const unitCost = productCosts[item.mlItemId]
+      const unitCost = item.productCode ? productCosts[item.productCode] : undefined
       return unitCost === undefined ? sum : sum + unitCost * item.quantity
     }, 0)
-    const anyCostMissing = row.items.length === 0 || row.items.some((item) => productCosts[item.mlItemId] === undefined)
+    const anyCostMissing =
+      row.items.length === 0 ||
+      row.items.some((item) => item.productCode === null || productCosts[item.productCode] === undefined)
 
     const margin = calculateOrderMargin({
       saleAmount: row.saleAmount,
@@ -176,6 +188,7 @@ export default async function MargemContribuicaoPage() {
                 <TableHead>Cliente</TableHead>
                 <TableHead>Cidade/UF</TableHead>
                 <TableHead>Canal</TableHead>
+                <TableHead>SKU</TableHead>
                 <TableHead>Produto(s)</TableHead>
                 <TableHead className="text-right">Venda</TableHead>
                 <TableHead className="text-right">Custo</TableHead>
@@ -200,6 +213,7 @@ export default async function MargemContribuicaoPage() {
                     {row.destinationCity && row.destinationState ? `${row.destinationCity}/${row.destinationState}` : '—'}
                   </TableCell>
                   <TableCell>{row.salesChannel ?? '—'}</TableCell>
+                  <TableCell>{row.items.map((item) => item.productCode ?? '—').join(', ')}</TableCell>
                   <TableCell>{row.items.map((item) => item.title).join(', ')}</TableCell>
                   <TableCell className="text-right">{formatCurrencyBRL(row.saleAmount)}</TableCell>
                   <TableCell className="text-right">{productCost === null ? 'custo não cadastrado' : formatCurrencyBRL(productCost)}</TableCell>

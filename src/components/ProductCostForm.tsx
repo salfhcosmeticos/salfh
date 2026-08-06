@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
 export function ProductCostForm({ userId }: { userId: string }) {
-  const [mlItemId, setMlItemId] = useState('')
+  const [productCode, setProductCode] = useState('')
   const [cost, setCost] = useState('')
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
@@ -15,17 +15,17 @@ export function ProductCostForm({ userId }: { userId: string }) {
     event.preventDefault()
     const supabase = createBrowserSupabaseClient()
     const parsedCost = Number(cost)
-    const result = await upsertProductCost(supabase, userId, mlItemId, parsedCost)
+    const result = await upsertProductCost(supabase, userId, productCode, parsedCost)
     setStatus(result.error ? 'error' : 'saved')
   }
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-2">
       <div className="flex flex-col gap-1">
-        <label htmlFor="ml-item-id" className="text-sm">
+        <label htmlFor="product-code" className="text-sm">
           SKU do produto
         </label>
-        <Input id="ml-item-id" value={mlItemId} onChange={(event) => setMlItemId(event.target.value)} />
+        <Input id="product-code" value={productCode} onChange={(event) => setProductCode(event.target.value)} />
       </div>
       <div className="flex flex-col gap-1">
         <label htmlFor="cost" className="text-sm">

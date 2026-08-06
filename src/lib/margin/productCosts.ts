@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export async function listProductCosts(supabase: SupabaseClient): Promise<Record<string, number>> {
-  const { data, error } = await supabase.from('product_costs').select('ml_item_id, cost')
+  const { data, error } = await supabase.from('product_costs').select('product_code, cost')
 
   if (error) {
     console.error('Falha ao carregar custos de produto:', error)
@@ -9,21 +9,21 @@ export async function listProductCosts(supabase: SupabaseClient): Promise<Record
   }
 
   return Object.fromEntries(
-    (data ?? []).map((row: { ml_item_id: string; cost: number }) => [row.ml_item_id, row.cost])
+    (data ?? []).map((row: { product_code: string; cost: number }) => [row.product_code, row.cost])
   )
 }
 
 export async function upsertProductCost(
   supabase: SupabaseClient,
   userId: string,
-  mlItemId: string,
+  productCode: string,
   cost: number
 ): Promise<{ error: boolean }> {
   const { error } = await supabase
     .from('product_costs')
     .upsert(
-      { user_id: userId, ml_item_id: mlItemId, cost, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id,ml_item_id' }
+      { user_id: userId, product_code: productCode, cost, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,product_code' }
     )
 
   if (error) {

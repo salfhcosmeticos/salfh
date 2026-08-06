@@ -63,7 +63,7 @@ export async function upsertOrder(
 
   let nfNumber: string | null = null
   let nfFetchedAt: string | null = null
-  let invoiceItems: { productCode: string; ncm: string }[] = []
+  let ncmByProductCode: Record<string, string> = {}
   try {
     const fiscalDocument = await findFiscalDocumentForOrder(accessToken, order.id)
     if (fiscalDocument) {
@@ -71,19 +71,16 @@ export async function upsertOrder(
       const invoice = parseNfeXml(xml)
       nfNumber = invoice.invoiceNumber
       nfFetchedAt = new Date().toISOString()
-      invoiceItems = invoice.items
+      // The invoice's <cProd> is the same code as the order item's own SKU
+      // (order.items[].sellerSku, from Mercado Livre's seller_custom_field) -
+      // the seller's ERP (OMIE) prints it on the NF-e as "CÓDIGO PRODUTO"
+      // using that same value, so this is a reliable join key, not a guess.
+      ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
     }
   } catch {
     // No fiscal document yet is expected, not an error - nf_fetched_at stays
     // null and retryPendingFiscalDocuments (Task 6) tries again later.
   }
-
-  // NCM is matched positionally: there is no shared identifier between a
-  // Mercado Livre order item and an NF-e <det> product line (the invoice's
-  // <cProd> is the seller's own ERP product code, unrelated to ML's listing
-  // id) - matching by array index is only reliable when both lists have the
-  // same item count, since the invoice is issued for exactly this order.
-  const ncmByPosition = order.items.length === invoiceItems.length ? invoiceItems.map((item) => item.ncm) : []
 
   const { data: orderRow, error: orderError } = await supabase
     .from('orders')
@@ -120,14 +117,15 @@ export async function upsertOrder(
     return
   }
 
-  const itemRows = order.items.map((item, index) => ({
+  const itemRows = order.items.map((item) => ({
     order_id: orderRow.id,
     user_id: userId,
     ml_item_id: item.mlItemId,
     title: item.title,
     quantity: item.quantity,
     unit_price: item.unitPrice,
-    ncm: ncmByPosition[index] ?? null,
+    product_code: item.sellerSku,
+    ncm: item.sellerSku ? (ncmByProductCode[item.sellerSku] ?? null) : null,
   }))
 
   const { error: itemsError } = await supabase
@@ -428,6 +426,7 @@ export async function retryPendingFiscalDocuments(
 
         const xml = await downloadFiscalDocumentXml(accessToken, fiscalDocument.documentItemId)
         const invoice = parseNfeXml(xml)
+        const ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
 
         const { error: orderUpdateError } = await supabase
           .from('orders')
@@ -440,25 +439,21 @@ export async function retryPendingFiscalDocuments(
 
         const { data: items, error: itemsQueryError } = await supabase
           .from('order_items')
-          .select('id, ml_item_id')
+          .select('id, product_code')
           .eq('order_id', pendingOrder.id)
-          .order('created_at', { ascending: true })
 
         if (itemsQueryError) {
           throw new Error(itemsQueryError.message)
         }
 
-        // NCM is matched positionally (see upsertOrder for why): only when the
-        // order and invoice have the same item count is index-based matching
-        // reliable, since there is no shared identifier between the two.
-        const orderedItems = items ?? []
-        if (orderedItems.length === invoice.items.length) {
-          for (let i = 0; i < orderedItems.length; i += 1) {
-            const ncm = invoice.items[i].ncm
-            const { error: itemUpdateError } = await supabase
-              .from('order_items')
-              .update({ ncm })
-              .eq('id', orderedItems[i].id)
+        // NCM is matched by product_code (the seller's own SKU, captured at
+        // sync time from Mercado Livre's order data) - the same code the
+        // invoice prints as "CÓDIGO PRODUTO", so this is a direct, reliable
+        // lookup rather than a positional guess.
+        for (const item of items ?? []) {
+          const ncm = item.product_code ? ncmByProductCode[item.product_code] : undefined
+          if (ncm) {
+            const { error: itemUpdateError } = await supabase.from('order_items').update({ ncm }).eq('id', item.id)
             if (itemUpdateError) {
               throw new Error(itemUpdateError.message)
             }

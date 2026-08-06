@@ -7,14 +7,14 @@ afterEach(() => {
 })
 
 describe('listProductCosts', () => {
-  it('returns a map of ml_item_id to cost', async () => {
+  it('returns a map of product_code to cost', async () => {
     const supabase = {
       from: () => ({
         select: () =>
           Promise.resolve({
             data: [
-              { ml_item_id: 'SF9004', cost: 45.5 },
-              { ml_item_id: 'SF9846', cost: 20 },
+              { product_code: 'SF9004', cost: 45.5 },
+              { product_code: 'SF9846', cost: 20 },
             ],
             error: null,
           }),
@@ -43,8 +43,8 @@ describe('upsertProductCost', () => {
 
     expect(result).toEqual({ error: false })
     expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: 'user-1', ml_item_id: 'SF9004', cost: 45.5 }),
-      { onConflict: 'user_id,ml_item_id' }
+      expect.objectContaining({ user_id: 'user-1', product_code: 'SF9004', cost: 45.5 }),
+      { onConflict: 'user_id,product_code' }
     )
   })
 
