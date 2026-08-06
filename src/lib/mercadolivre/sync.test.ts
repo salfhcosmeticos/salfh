@@ -136,7 +136,7 @@ describe('upsertOrder - margin data', () => {
 
   it('uses shipping_or_fee_type "frete" and the seller shipment cost when sale amount is >= 79', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR' })
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: null })
     const getShipmentSellerCostMock = vi.spyOn(client, 'getShipmentSellerCost').mockResolvedValue(29)
     const order: MercadoLivreOrder = { ...sampleOrder, totalAmount: 236.9, shippingId: 987654 }
 
@@ -150,7 +150,7 @@ describe('upsertOrder - margin data', () => {
 
   it('uses shipping_or_fee_type "taxa_fixa" and does not call getShipmentSellerCost when sale amount is < 79', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR' })
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: null })
     const getShipmentSellerCostMock = vi.spyOn(client, 'getShipmentSellerCost')
     const order: MercadoLivreOrder = { ...sampleOrder, totalAmount: 50, shippingId: 987654 }
 
