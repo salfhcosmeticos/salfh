@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import type { ComponentType } from 'react'
 import { LayoutDashboard, Megaphone, Package, PieChart, Plug, Settings, Wallet, Warehouse } from 'lucide-react'
 import {
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
 ]
 
 export function AppSidebar() {
+  const pathname = usePathname()
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="px-3 py-2 text-sm font-semibold">
@@ -44,7 +46,7 @@ export function AppSidebar() {
               {NAV_ITEMS.map((item) => (
                 <SidebarMenuItem key={item.label}>
                   {item.href ? (
-                    <SidebarMenuButton asChild isActive tooltip={item.label}>
+                    <SidebarMenuButton asChild isActive={pathname === item.href} tooltip={item.label}>
                       <Link href={item.href}>
                         <item.icon className="h-4 w-4" />
                         <span>{item.label}</span>

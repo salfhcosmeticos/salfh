@@ -77,7 +77,7 @@ export default async function MargemContribuicaoPage() {
       const unitCost = productCosts[item.mlItemId]
       return unitCost === undefined ? sum : sum + unitCost * item.quantity
     }, 0)
-    const anyCostMissing = row.items.some((item) => productCosts[item.mlItemId] === undefined)
+    const anyCostMissing = row.items.length === 0 || row.items.some((item) => productCosts[item.mlItemId] === undefined)
 
     const margin = calculateOrderMargin({
       saleAmount: row.saleAmount,
@@ -160,7 +160,7 @@ export default async function MargemContribuicaoPage() {
                 <TableHead className="text-right">Frete/Taxa</TableHead>
                 <TableHead className="text-right">Déb. ICMS</TableHead>
                 <TableHead className="text-right">Lucro líquido</TableHead>
-                <TableHead className="text-right">Margem sobre custo</TableHead>
+                <TableHead className="text-right">Margem %</TableHead>
                 <TableHead className="text-right">Créd. PIS</TableHead>
                 <TableHead className="text-right">Créd. COFINS</TableHead>
                 <TableHead className="text-right">Créd. ICMS frete</TableHead>

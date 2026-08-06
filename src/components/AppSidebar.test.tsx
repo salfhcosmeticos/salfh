@@ -23,7 +23,7 @@ beforeAll(() => {
 })
 
 describe('AppSidebar', () => {
-  it('renders Vendas as a real link and every other item as disabled with no href', () => {
+  it('renders Vendas and Margem de contribuição as real links and every other item as disabled with no href', () => {
     render(
       <TooltipProvider>
         <SidebarProvider>
