@@ -234,7 +234,7 @@ async function syncOrdersWindow(
   return { processed, errors, lastError }
 }
 
-async function syncOrdersInRange(
+export async function syncOrdersInRange(
   supabase: SupabaseClient,
   account: StoredMercadoLivreAccount,
   fromDate: string,
