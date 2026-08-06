@@ -4,6 +4,7 @@ import { calculateOrderMargin, summarizeMarginPeriod } from '@/lib/margin/calcul
 import { formatCurrencyBRL } from '@/lib/format'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ProductCostForm } from '@/components/ProductCostForm'
 import { isSameMonth, subMonths } from 'date-fns'
 
 interface OrderRow {
@@ -111,6 +112,8 @@ export default async function MargemContribuicaoPage() {
     <div className="flex flex-col gap-4">
       <h1 className="text-lg font-semibold">Margem de contribuição</h1>
       {error ? <p className="text-sm text-destructive">Não foi possível carregar os pedidos.</p> : null}
+
+      <ProductCostForm userId={user.id} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
