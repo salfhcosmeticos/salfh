@@ -51,6 +51,7 @@ export interface MercadoLivreOrderItem {
   title: string
   quantity: number
   unitPrice: number
+  saleFee: number
 }
 
 export interface MercadoLivreOrder {
@@ -60,6 +61,8 @@ export interface MercadoLivreOrder {
   currencyId: string
   dateCreated: string
   items: MercadoLivreOrderItem[]
+  shippingId: number | null
+  salesChannel: string | null
 }
 
 interface MercadoLivreOrderResponse {
@@ -68,7 +71,14 @@ interface MercadoLivreOrderResponse {
   total_amount: number
   currency_id: string
   date_created: string
-  order_items: { item: { id: string; title: string }; quantity: number; unit_price: number }[]
+  order_items: {
+    item: { id: string; title: string }
+    quantity: number
+    unit_price: number
+    sale_fee?: number
+  }[]
+  shipping: { id: number } | null
+  tags?: string[]
 }
 
 function toOrder(response: MercadoLivreOrderResponse): MercadoLivreOrder {
@@ -83,7 +93,10 @@ function toOrder(response: MercadoLivreOrderResponse): MercadoLivreOrder {
       title: entry.item.title,
       quantity: entry.quantity,
       unitPrice: entry.unit_price,
+      saleFee: entry.sale_fee ?? 0,
     })),
+    shippingId: response.shipping?.id ?? null,
+    salesChannel: response.tags?.[0] ?? null,
   }
 }
 
@@ -115,4 +128,69 @@ export async function searchOrders(
     accessToken
   )
   return { orders: response.results.map(toOrder), total: response.paging.total }
+}
+
+export interface MercadoLivreShipmentAddress {
+  city: string
+  state: string
+}
+
+interface MercadoLivreShipmentResponse {
+  receiver_address: { city: { name: string }; state: { name: string } }
+}
+
+export async function getShipmentAddress(accessToken: string, shippingId: number): Promise<MercadoLivreShipmentAddress> {
+  const response = await mlGet<MercadoLivreShipmentResponse>(`/shipments/${shippingId}`, accessToken)
+  return { city: response.receiver_address.city.name, state: response.receiver_address.state.name }
+}
+
+interface MercadoLivreShipmentCostsResponse {
+  senders: { cost: number }[]
+}
+
+export async function getShipmentSellerCost(accessToken: string, shippingId: number): Promise<number> {
+  const response = await mlGet<MercadoLivreShipmentCostsResponse>(`/shipments/${shippingId}/costs`, accessToken)
+  return response.senders.reduce((sum, sender) => sum + sender.cost, 0)
+}
+
+export interface MercadoLivreBillingInfo {
+  buyerName: string | null
+}
+
+interface MercadoLivreBillingInfoResponse {
+  billing_info?: { name?: string; last_name?: string }
+}
+
+export async function getBillingInfo(accessToken: string, orderId: number): Promise<MercadoLivreBillingInfo> {
+  const response = await mlGet<MercadoLivreBillingInfoResponse>(`/orders/${orderId}/billing_info`, accessToken)
+  const info = response.billing_info
+  if (!info?.name) return { buyerName: null }
+  return { buyerName: info.last_name ? `${info.name} ${info.last_name}` : info.name }
+}
+
+export interface MercadoLivreFiscalDocumentRef {
+  documentItemId: string
+}
+
+interface MercadoLivreFiscalDocumentsResponse {
+  results: { items: { id: string }[] }[]
+}
+
+export async function findFiscalDocumentForOrder(
+  accessToken: string,
+  orderId: number
+): Promise<MercadoLivreFiscalDocumentRef | null> {
+  const response = await mlGet<MercadoLivreFiscalDocumentsResponse>(`/v2/fiscalDocuments?orderId=${orderId}`, accessToken)
+  const documentItemId = response.results[0]?.items[0]?.id
+  return documentItemId ? { documentItemId } : null
+}
+
+export async function downloadFiscalDocumentXml(accessToken: string, documentItemId: string): Promise<string> {
+  const response = await fetch(`${ML_API_BASE}/v2/fiscalDocuments/download/${documentItemId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    throw new Error(`Mercado Livre fiscal document download error: ${response.status}`)
+  }
+  return response.text()
 }

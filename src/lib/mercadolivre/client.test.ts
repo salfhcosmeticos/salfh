@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { getValidAccessToken, getOrder, searchOrders } from './client'
+import {
+  getValidAccessToken,
+  getOrder,
+  searchOrders,
+  getShipmentAddress,
+  getShipmentSellerCost,
+  getBillingInfo,
+  findFiscalDocumentForOrder,
+  downloadFiscalDocumentXml,
+} from './client'
 import * as oauth from './oauth'
 
 const originalFetch = global.fetch
@@ -54,8 +63,10 @@ describe('getOrder', () => {
         currency_id: 'BRL',
         date_created: '2026-08-01T10:00:00.000-04:00',
         order_items: [
-          { item: { id: 'MLB1', title: 'Produto Teste' }, quantity: 2, unit_price: 99.95 },
+          { item: { id: 'MLB1', title: 'Produto Teste' }, quantity: 2, unit_price: 99.95, sale_fee: 18.5 },
         ],
+        shipping: { id: 987654 },
+        tags: ['catalog_listing_eligible'],
       }),
     }) as unknown as typeof fetch
 
@@ -66,8 +77,13 @@ describe('getOrder', () => {
       totalAmount: 199.9,
       currencyId: 'BRL',
       dateCreated: '2026-08-01T10:00:00.000-04:00',
-      items: [{ mlItemId: 'MLB1', title: 'Produto Teste', quantity: 2, unitPrice: 99.95 }],
+      items: [{ mlItemId: 'MLB1', title: 'Produto Teste', quantity: 2, unitPrice: 99.95, saleFee: 18.5 }],
+      shippingId: 987654,
+      salesChannel: 'catalog_listing_eligible',
     })
+    expect(order.items[0].saleFee).toBe(18.5)
+    expect(order.shippingId).toBe(987654)
+    expect(order.salesChannel).toBe('catalog_listing_eligible')
   })
 })
 
@@ -123,5 +139,77 @@ describe('getOrder rate limiting', () => {
     expect(order.id).toBe(123)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     vi.useRealTimers()
+  })
+})
+
+describe('getShipmentAddress', () => {
+  it('maps the shipment receiver address to city and state', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { name: 'PR' } } }),
+    }) as unknown as typeof fetch
+
+    const address = await getShipmentAddress('token', 987654)
+
+    expect(address).toEqual({ city: 'Curitiba', state: 'PR' })
+  })
+})
+
+describe('getShipmentSellerCost', () => {
+  it('sums the seller-side cost entries', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ senders: [{ cost: 21.15 }] }),
+    }) as unknown as typeof fetch
+
+    expect(await getShipmentSellerCost('token', 987654)).toBe(21.15)
+  })
+})
+
+describe('getBillingInfo', () => {
+  it('joins name and last_name when both are present', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ billing_info: { name: 'Paolla', last_name: 'Coelho' } }),
+    }) as unknown as typeof fetch
+
+    expect(await getBillingInfo('token', 123)).toEqual({ buyerName: 'Paolla Coelho' })
+  })
+
+  it('returns buyerName: null when billing_info has no name', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }) as unknown as typeof fetch
+
+    expect(await getBillingInfo('token', 123)).toEqual({ buyerName: null })
+  })
+})
+
+describe('findFiscalDocumentForOrder', () => {
+  it('returns the first document item id when a fiscal document exists', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ results: [{ items: [{ id: 'doc-item-1' }] }] }),
+    }) as unknown as typeof fetch
+
+    expect(await findFiscalDocumentForOrder('token', 123)).toEqual({ documentItemId: 'doc-item-1' })
+  })
+
+  it('returns null when no fiscal document exists yet', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ results: [] }) }) as unknown as typeof fetch
+
+    expect(await findFiscalDocumentForOrder('token', 123)).toBeNull()
+  })
+})
+
+describe('downloadFiscalDocumentXml', () => {
+  it('returns the response body text', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => '<xml/>' }) as unknown as typeof fetch
+
+    expect(await downloadFiscalDocumentXml('token', 'doc-item-1')).toBe('<xml/>')
+  })
+
+  it('throws when the download response is not ok', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
+
+    await expect(downloadFiscalDocumentXml('token', 'doc-item-1')).rejects.toThrow('404')
   })
 })

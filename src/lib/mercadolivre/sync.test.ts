@@ -84,7 +84,9 @@ const sampleOrder: MercadoLivreOrder = {
   totalAmount: 150,
   currencyId: 'BRL',
   dateCreated: '2026-08-01T10:00:00.000-04:00',
-  items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150 }],
+  items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0 }],
+  shippingId: null,
+  salesChannel: null,
 }
 
 describe('upsertOrder', () => {
