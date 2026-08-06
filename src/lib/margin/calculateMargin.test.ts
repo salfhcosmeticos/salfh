@@ -1,36 +1,61 @@
 import { describe, it, expect } from 'vitest'
 import { icmsDebitRate, calculateOrderMargin, summarizeMarginPeriod } from './calculateMargin'
 
-describe('icmsDebitRate', () => {
+describe('icmsDebitRate - matriz', () => {
   it('is 0% for a Parana destination with an exempt cosmetic NCM', () => {
-    expect(icmsDebitRate('PR', '33059000')).toBe(0)
-    expect(icmsDebitRate('PR', '33051000')).toBe(0)
+    expect(icmsDebitRate('matriz', 'PR', '33059000')).toBe(0)
+    expect(icmsDebitRate('matriz', 'PR', '33051000')).toBe(0)
   })
 
   it('is 19.5% for a Parana destination with a non-exempt NCM', () => {
-    expect(icmsDebitRate('PR', '12345678')).toBe(0.195)
+    expect(icmsDebitRate('matriz', 'PR', '12345678')).toBe(0.195)
   })
 
   it('is 19.5% for a Parana destination with no NCM known yet', () => {
-    expect(icmsDebitRate('PR', null)).toBe(0.195)
+    expect(icmsDebitRate('matriz', 'PR', null)).toBe(0.195)
   })
 
   it('is 12% for MG, SP, RJ, SC and RS regardless of NCM', () => {
     for (const state of ['MG', 'SP', 'RJ', 'SC', 'RS']) {
-      expect(icmsDebitRate(state, '33059000')).toBe(0.12)
-      expect(icmsDebitRate(state, null)).toBe(0.12)
+      expect(icmsDebitRate('matriz', state, '33059000')).toBe(0.12)
+      expect(icmsDebitRate('matriz', state, null)).toBe(0.12)
     }
   })
 
   it('is 7% for any other state', () => {
-    expect(icmsDebitRate('BA', null)).toBe(0.07)
-    expect(icmsDebitRate('AM', '33059000')).toBe(0.07)
+    expect(icmsDebitRate('matriz', 'BA', null)).toBe(0.07)
+    expect(icmsDebitRate('matriz', 'AM', '33059000')).toBe(0.07)
   })
 
   it('returns null for an unrecognized destination instead of guessing a default rate', () => {
-    expect(icmsDebitRate('São Paulo', null)).toBeNull()
-    expect(icmsDebitRate('XX', '33059000')).toBeNull()
-    expect(icmsDebitRate('', null)).toBeNull()
+    expect(icmsDebitRate('matriz', 'São Paulo', null)).toBeNull()
+    expect(icmsDebitRate('matriz', 'XX', '33059000')).toBeNull()
+    expect(icmsDebitRate('matriz', '', null)).toBeNull()
+  })
+})
+
+describe('icmsDebitRate - filial', () => {
+  it('is 18% for SP', () => {
+    expect(icmsDebitRate('filial', 'SP', null)).toBe(0.18)
+    expect(icmsDebitRate('filial', 'SP', '33059000')).toBe(0.18)
+  })
+
+  it('is 12% for PR, RS, SC, RJ and MG, ignoring NCM (no cosmetic exemption on this table)', () => {
+    for (const state of ['PR', 'RS', 'SC', 'RJ', 'MG']) {
+      expect(icmsDebitRate('filial', state, null)).toBe(0.12)
+      expect(icmsDebitRate('filial', state, '33059000')).toBe(0.12)
+    }
+  })
+
+  it('is 7% for any other state', () => {
+    expect(icmsDebitRate('filial', 'BA', null)).toBe(0.07)
+    expect(icmsDebitRate('filial', 'AM', '33059000')).toBe(0.07)
+  })
+
+  it('returns null for an unrecognized destination', () => {
+    expect(icmsDebitRate('filial', 'São Paulo', null)).toBeNull()
+    expect(icmsDebitRate('filial', 'XX', null)).toBeNull()
+    expect(icmsDebitRate('filial', '', null)).toBeNull()
   })
 })
 
@@ -47,6 +72,7 @@ describe('calculateOrderMargin', () => {
     ],
     destinationState: 'SP',
     nfPending: false,
+    cnpj: 'matriz' as const,
   }
 
   it('computes ICMS debit as the sum across items using each item value and NCM', () => {
@@ -132,6 +158,28 @@ describe('calculateOrderMargin', () => {
   it('returns zero ICMS-on-shipping credit when the charge was a fixed fee, not freight', () => {
     const result = calculateOrderMargin({ ...baseInput, shippingOrFeeType: 'taxa_fixa' })
     expect(result.creditIcmsOnShipping).toBe(0)
+  })
+
+  it('selects the filial rate table when cnpj is "filial", instead of the matriz table', () => {
+    // Matriz would apply 19.5% to PR with a non-exempt NCM (12345678); filial
+    // applies its own flat 12% for PR regardless of NCM.
+    const result = calculateOrderMargin({
+      ...baseInput,
+      cnpj: 'filial',
+      destinationState: 'PR',
+      items: [{ itemValue: 100, ncm: '12345678' }],
+    })
+    expect(result.icmsDebit).toBeCloseTo(12, 3) // 100 * 0.12
+  })
+
+  it('keeps the matriz table (including the PR cosmetic-NCM exemption) when cnpj is "matriz"', () => {
+    const result = calculateOrderMargin({
+      ...baseInput,
+      cnpj: 'matriz',
+      destinationState: 'PR',
+      items: [{ itemValue: 100, ncm: '33059000' }],
+    })
+    expect(result.icmsDebit).toBe(0)
   })
 })
 
