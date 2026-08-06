@@ -6,6 +6,7 @@ import {
   buildMonthlyWindows,
   handleMercadoLivreWebhook,
   reconcileRecentOrders,
+  retryPendingFiscalDocuments,
 } from './sync'
 import type { MercadoLivreOrder } from './client'
 import * as client from './client'
@@ -464,5 +465,80 @@ describe('reconcileRecentOrders', () => {
     const result = await reconcileRecentOrders(supabase, account, 2)
     expect(result.processed).toBe(1)
     expect(orderUpsertCalls).toHaveLength(1)
+  })
+})
+
+describe('retryPendingFiscalDocuments', () => {
+  it('counts a failed orders.update write as an error (not processed) and still processes the rest of the batch', async () => {
+    const pendingOrders = [
+      { id: 'order-fail', ml_order_id: 111 },
+      { id: 'order-ok', ml_order_id: 222 },
+    ]
+    const orderUpdateErrors: Record<string, { message: string } | null> = {
+      'order-fail': { message: 'update rejected by RLS' },
+      'order-ok': null,
+    }
+    const syncRunInserts: unknown[] = []
+
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({
+              eq: () => ({
+                is: async () => ({ data: pendingOrders, error: null }),
+              }),
+            }),
+            update: () => ({
+              eq: async (_col: string, id: string) => ({ error: orderUpdateErrors[id] ?? null }),
+            }),
+          }
+        }
+        if (table === 'order_items') {
+          return {
+            select: () => ({ eq: async () => ({ data: [], error: null }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return {
+            insert: async (data: unknown) => {
+              syncRunInserts.push(data)
+              return { error: null }
+            },
+          }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
+
+    const result = await retryPendingFiscalDocuments(supabase, account)
+
+    // The failing order's write error must surface as an error, not be
+    // silently swallowed and counted as a successful "processed" order - and
+    // the second order in the batch must still be attempted and succeed.
+    expect(result).toEqual({ processed: 1, errors: 1 })
+    expect(syncRunInserts).toHaveLength(1)
+    expect(syncRunInserts[0]).toMatchObject({
+      orders_processed: 1,
+      error_count: 1,
+      last_error: 'update rejected by RLS',
+    })
   })
 })

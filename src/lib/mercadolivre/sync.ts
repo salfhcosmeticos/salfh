@@ -423,16 +423,31 @@ export async function retryPendingFiscalDocuments(
         const invoice = parseNfeXml(xml)
         const ncmByItemCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
 
-        await supabase
+        const { error: orderUpdateError } = await supabase
           .from('orders')
           .update({ nf_number: invoice.invoiceNumber, nf_fetched_at: new Date().toISOString() })
           .eq('id', pendingOrder.id)
 
-        const { data: items } = await supabase.from('order_items').select('id, ml_item_id').eq('order_id', pendingOrder.id)
+        if (orderUpdateError) {
+          throw new Error(orderUpdateError.message)
+        }
+
+        const { data: items, error: itemsQueryError } = await supabase
+          .from('order_items')
+          .select('id, ml_item_id')
+          .eq('order_id', pendingOrder.id)
+
+        if (itemsQueryError) {
+          throw new Error(itemsQueryError.message)
+        }
+
         for (const item of items ?? []) {
           const ncm = ncmByItemCode[item.ml_item_id]
           if (ncm) {
-            await supabase.from('order_items').update({ ncm }).eq('id', item.id)
+            const { error: itemUpdateError } = await supabase.from('order_items').update({ ncm }).eq('id', item.id)
+            if (itemUpdateError) {
+              throw new Error(itemUpdateError.message)
+            }
           }
         }
 
