@@ -10,6 +10,7 @@ import {
 } from './sync'
 import type { MercadoLivreOrder } from './client'
 import * as client from './client'
+import * as omieClient from '../omie/client'
 
 function createFakeSupabase() {
   const orderUpsertCalls: unknown[] = []
@@ -92,7 +93,7 @@ const sampleOrder: MercadoLivreOrder = {
 
 beforeEach(() => {
   vi.spyOn(client, 'getBillingInfo').mockResolvedValue({ buyerName: null })
-  vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+  vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
 })
 
 describe('upsertOrder', () => {
@@ -161,29 +162,28 @@ describe('upsertOrder - margin data', () => {
     })
   })
 
-  it('leaves nf_number and nf_fetched_at null and does not throw when no fiscal document is found', async () => {
+  it('leaves nf_number and nf_fetched_at null and does not throw when no invoice is found', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
 
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder)
 
     expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: null, nf_fetched_at: null }) })
   })
 
-  it('sets nf_number, nf_fetched_at, product_code and ncm (matched by product code) when a fiscal document is found', async () => {
+  it('sets nf_number, nf_fetched_at, product_code and ncm (matched by product code) when an invoice is found', async () => {
     const { client: supabase, orderUpsertCalls, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: 'SF9004' }],
     }
-    // The invoice's <cProd> ("SF9004") matches the order item's sellerSku -
-    // the seller's own SKU, captured from Mercado Livre's order data, is the
-    // same code the seller's ERP (OMIE) prints on the NF-e.
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    // The invoice's product code ("SF9004") matches the order item's
+    // sellerSku - the seller's own SKU, captured from Mercado Livre's order
+    // data, is the same code the seller's ERP (OMIE) prints on the NF-e.
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '123456',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
 
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
 
@@ -194,9 +194,9 @@ describe('upsertOrder - margin data', () => {
     })
   })
 
-  it('stores product_code from sellerSku even when no fiscal document is found yet, and leaves ncm null', async () => {
+  it('stores product_code from sellerSku even when no invoice is found yet, and leaves ncm null', async () => {
     const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: 'SF9004' }],
@@ -211,15 +211,14 @@ describe('upsertOrder - margin data', () => {
 
   it('matches ncm per item by product code, leaving unmatched items null, regardless of item-count differences', async () => {
     const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
     // The invoice only carries NCM for SF9004 - SF9846 (a real item on this
-    // order) has no matching <det> line. Matching by code means SF9004 gets
-    // its NCM correctly while SF9846 simply stays null - no guessing, no
+    // order) has no matching line. Matching by code means SF9004 gets its
+    // NCM correctly while SF9846 simply stays null - no guessing, no
     // dependency on the two lists having matching lengths.
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '123456',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [
@@ -240,11 +239,10 @@ describe('upsertOrder - margin data', () => {
 
   it('leaves product_code and ncm null when the item has no seller SKU set on Mercado Livre', async () => {
     const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '123456',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: null }],
@@ -257,7 +255,7 @@ describe('upsertOrder - margin data', () => {
     })
   })
 
-  it('leaves destination_city/state and buyer_name null without throwing when those calls fail', async () => {
+  it('leaves destination_city/state, logistic_type and buyer_name null without throwing when those calls fail', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabase()
     vi.spyOn(client, 'getShipmentAddress').mockRejectedValue(new Error('shipment not ready'))
     vi.spyOn(client, 'getBillingInfo').mockRejectedValue(new Error('billing info unavailable'))
@@ -266,8 +264,49 @@ describe('upsertOrder - margin data', () => {
     await expect(upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)).resolves.toBeUndefined()
 
     expect(orderUpsertCalls[0]).toMatchObject({
-      data: expect.objectContaining({ destination_city: null, destination_state: null, buyer_name: null }),
+      data: expect.objectContaining({
+        destination_city: null,
+        destination_state: null,
+        logistic_type: null,
+        buyer_name: null,
+      }),
     })
+  })
+
+  it('stores logistic_type from the shipment response on the orders row', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: 'fulfillment' })
+    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ logistic_type: 'fulfillment' }) })
+  })
+
+  it('looks up the invoice in the filial Omie account when logistic_type is "fulfillment"', async () => {
+    const { client: supabase } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'São Paulo', state: 'SP', logisticType: 'fulfillment' })
+    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
+    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(lookupInvoiceMock).toHaveBeenCalledWith('filial', order.id, new Date(order.dateCreated))
+  })
+
+  it('looks up the invoice in the matriz Omie account for any logistic_type other than "fulfillment", including null', async () => {
+    const { client: supabase } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: 'self_service' })
+    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
+    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(lookupInvoiceMock).toHaveBeenCalledWith('matriz', order.id, new Date(order.dateCreated))
+
+    lookupInvoiceMock.mockClear()
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder) // shippingId: null -> logisticType stays null
+    expect(lookupInvoiceMock).toHaveBeenCalledWith('matriz', sampleOrder.id, new Date(sampleOrder.dateCreated))
   })
 })
 

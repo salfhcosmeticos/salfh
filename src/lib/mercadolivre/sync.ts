@@ -12,6 +12,7 @@ import {
   downloadFiscalDocumentXml,
 } from './client'
 import { parseNfeXml } from './nfe'
+import { lookupInvoice } from '../omie/client'
 
 const FREE_SHIPPING_THRESHOLD = 79
 
@@ -38,18 +39,20 @@ export async function upsertOrder(
   let shippingOrFeeAmount = 0
   let destinationCity: string | null = null
   let destinationState: string | null = null
+  let logisticType: string | null = null
   if (order.shippingId !== null) {
     try {
       const address = await getShipmentAddress(accessToken, order.shippingId)
       destinationCity = address.city
       destinationState = address.state
+      logisticType = address.logisticType
       if (shippingOrFeeType === 'frete') {
         shippingOrFeeAmount = await getShipmentSellerCost(accessToken, order.shippingId)
       }
     } catch {
       // Shipment data not available yet or the call failed. Leave the
-      // destination/shipping fields null/0 - the reconciliation retry
-      // (retryPendingFiscalDocuments does not cover this path, only NF; a
+      // destination/shipping/logistic_type fields null/0 - the reconciliation
+      // retry (retryPendingFiscalDocuments does not cover this path, only NF; a
       // later order-level reconciliation pass will re-upsert and try again).
     }
   }
@@ -65,21 +68,22 @@ export async function upsertOrder(
   let nfFetchedAt: string | null = null
   let ncmByProductCode: Record<string, string> = {}
   try {
-    const fiscalDocument = await findFiscalDocumentForOrder(accessToken, order.id)
-    if (fiscalDocument) {
-      const xml = await downloadFiscalDocumentXml(accessToken, fiscalDocument.documentItemId)
-      const invoice = parseNfeXml(xml)
+    const omieAccount = logisticType === 'fulfillment' ? 'filial' : 'matriz'
+    const invoice = await lookupInvoice(omieAccount, order.id, new Date(order.dateCreated))
+    if (invoice) {
       nfNumber = invoice.invoiceNumber
       nfFetchedAt = new Date().toISOString()
-      // The invoice's <cProd> is the same code as the order item's own SKU
-      // (order.items[].sellerSku, from Mercado Livre's seller_sku) - the
-      // seller's ERP (OMIE) prints it on the NF-e as "CÓDIGO PRODUTO" using
-      // that same value, so this is a reliable join key, not a guess.
+      // The invoice's product code is the same code as the order item's own
+      // SKU (order.items[].sellerSku, from Mercado Livre's seller_sku) - the
+      // seller's ERP (OMIE) prints it on the NF-e using that same value, so
+      // this is a reliable join key, not a guess.
       ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
     }
   } catch {
-    // No fiscal document yet is expected, not an error - nf_fetched_at stays
-    // null and retryPendingFiscalDocuments (Task 6) tries again later.
+    // An Omie API failure (network error, auth failure, rate limit) must not
+    // block the rest of the sync - nf_fetched_at stays null and
+    // retryPendingFiscalDocuments (Task 6) retries later. A missing invoice
+    // (not yet issued) does not throw at all - that's the `if (invoice)` check.
   }
 
   const { data: orderRow, error: orderError } = await supabase
@@ -99,6 +103,7 @@ export async function upsertOrder(
         shipping_or_fee_type: shippingOrFeeType,
         destination_city: destinationCity,
         destination_state: destinationState,
+        logistic_type: logisticType,
         buyer_name: buyerName,
         sales_channel: order.salesChannel,
         nf_number: nfNumber,
