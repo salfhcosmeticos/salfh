@@ -1,17 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { subMonths } from 'date-fns'
 import type { MercadoLivreOrder } from './client'
-import {
-  getValidAccessToken,
-  searchOrders,
-  getOrder,
-  getShipmentAddress,
-  getShipmentSellerCost,
-  getBillingInfo,
-  findFiscalDocumentForOrder,
-  downloadFiscalDocumentXml,
-} from './client'
-import { parseNfeXml } from './nfe'
+import { getValidAccessToken, searchOrders, getOrder, getShipmentAddress, getShipmentSellerCost, getBillingInfo } from './client'
 import { lookupInvoice } from '../omie/client'
 
 const FREE_SHIPPING_THRESHOLD = 79
@@ -416,7 +406,7 @@ export async function retryPendingFiscalDocuments(
 
     const { data: pendingOrders, error: queryError } = await supabase
       .from('orders')
-      .select('id, ml_order_id')
+      .select('id, ml_order_id, order_date, logistic_type')
       .eq('account_id', account.id)
       .is('nf_fetched_at', null)
 
@@ -426,11 +416,10 @@ export async function retryPendingFiscalDocuments(
 
     for (const pendingOrder of pendingOrders ?? []) {
       try {
-        const fiscalDocument = await findFiscalDocumentForOrder(accessToken, pendingOrder.ml_order_id)
-        if (!fiscalDocument) continue // still not issued - try again on a later pass, not an error
+        const omieAccount = pendingOrder.logistic_type === 'fulfillment' ? 'filial' : 'matriz'
+        const invoice = await lookupInvoice(omieAccount, pendingOrder.ml_order_id, new Date(pendingOrder.order_date))
+        if (!invoice) continue // still not issued - try again on a later pass, not an error
 
-        const xml = await downloadFiscalDocumentXml(accessToken, fiscalDocument.documentItemId)
-        const invoice = parseNfeXml(xml)
         const ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
 
         const { error: orderUpdateError } = await supabase

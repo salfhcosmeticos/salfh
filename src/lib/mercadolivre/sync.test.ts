@@ -580,8 +580,8 @@ describe('reconcileRecentOrders', () => {
 describe('retryPendingFiscalDocuments', () => {
   it('counts a failed orders.update write as an error (not processed) and still processes the rest of the batch', async () => {
     const pendingOrders = [
-      { id: 'order-fail', ml_order_id: 111 },
-      { id: 'order-ok', ml_order_id: 222 },
+      { id: 'order-fail', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
+      { id: 'order-ok', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
     ]
     const orderUpdateErrors: Record<string, { message: string } | null> = {
       'order-fail': { message: 'update rejected by RLS' },
@@ -631,11 +631,10 @@ describe('retryPendingFiscalDocuments', () => {
     }
 
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '999',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
 
     const result = await retryPendingFiscalDocuments(supabase, account)
 
@@ -691,13 +690,20 @@ describe('retryPendingFiscalDocuments', () => {
     expect(selectCalls[0].isArgs).toEqual(['nf_fetched_at', null])
   })
 
-  it('leaves an order untouched and does not count it as an error when no fiscal document exists yet', async () => {
+  it('leaves an order untouched and does not count it as an error when no invoice exists yet', async () => {
     const orderUpdateCalls: unknown[] = []
     const supabase = {
       from(table: string) {
         if (table === 'orders') {
           return {
-            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            select: () => ({
+              eq: () => ({
+                is: async () => ({
+                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
+                  error: null,
+                }),
+              }),
+            }),
             update: (data: unknown) => ({
               eq: async (col: string, id: string) => {
                 orderUpdateCalls.push({ data, col, id })
@@ -722,7 +728,7 @@ describe('retryPendingFiscalDocuments', () => {
       tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     }
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
 
     const result = await retryPendingFiscalDocuments(supabase, account)
 
@@ -736,7 +742,14 @@ describe('retryPendingFiscalDocuments', () => {
       from(table: string) {
         if (table === 'orders') {
           return {
-            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            select: () => ({
+              eq: () => ({
+                is: async () => ({
+                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
+                  error: null,
+                }),
+              }),
+            }),
             update: () => ({ eq: async () => ({ error: null }) }),
           }
         }
@@ -775,15 +788,16 @@ describe('retryPendingFiscalDocuments', () => {
       tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     }
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
-    // Invoice cProd values ("SF9004", "SF9846") match the order_items rows'
+    // Invoice product codes ("SF9004", "SF9846") match the order_items rows'
     // product_code exactly (captured earlier from Mercado Livre's own
-    // seller_custom_field), so matching is a direct lookup, not a guess.
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det>' +
-        '<det nItem="2"><prod><cProd>SF9846</cProd><NCM>33051000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    // seller_sku), so matching is a direct lookup, not a guess.
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '999',
+      items: [
+        { productCode: 'SF9004', ncm: '33059000' },
+        { productCode: 'SF9846', ncm: '33051000' },
+      ],
+    })
 
     await retryPendingFiscalDocuments(supabase, account)
 
@@ -801,7 +815,14 @@ describe('retryPendingFiscalDocuments', () => {
       from(table: string) {
         if (table === 'orders') {
           return {
-            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            select: () => ({
+              eq: () => ({
+                is: async () => ({
+                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
+                  error: null,
+                }),
+              }),
+            }),
             update: () => ({ eq: async () => ({ error: null }) }),
           }
         }
@@ -840,13 +861,12 @@ describe('retryPendingFiscalDocuments', () => {
       tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     }
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
     // The invoice only has a line for SF9004 - SF9846 has no match and must
     // simply be left alone, not guessed at.
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
+      invoiceNumber: '999',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
 
     const result = await retryPendingFiscalDocuments(supabase, account)
 
@@ -854,10 +874,10 @@ describe('retryPendingFiscalDocuments', () => {
     expect(itemUpdateCalls).toEqual([{ id: 'item-row-1', ncm: '33059000' }])
   })
 
-  it('isolates a failure at the fiscal-document-fetch stage so the rest of the batch still processes', async () => {
+  it('isolates a failure at the invoice-lookup stage so the rest of the batch still processes', async () => {
     const pendingOrders = [
-      { id: 'order-fail', ml_order_id: 111 },
-      { id: 'order-ok', ml_order_id: 222 },
+      { id: 'order-fail', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
+      { id: 'order-ok', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
     ]
     const supabase = {
       from(table: string) {
@@ -889,17 +909,59 @@ describe('retryPendingFiscalDocuments', () => {
       tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     }
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    const findFiscalDocumentMock = vi.spyOn(client, 'findFiscalDocumentForOrder')
-    findFiscalDocumentMock.mockRejectedValueOnce(new Error('Mercado Livre fiscal document download error: 500'))
-    findFiscalDocumentMock.mockResolvedValueOnce({ documentItemId: 'doc-item-1' })
-    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
-      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
-    )
+    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice')
+    lookupInvoiceMock.mockRejectedValueOnce(new Error('Omie API error on ConsultarNF: 500'))
+    lookupInvoiceMock.mockResolvedValueOnce({
+      invoiceNumber: '999',
+      items: [{ productCode: 'SF9004', ncm: '33059000' }],
+    })
 
     const result = await retryPendingFiscalDocuments(supabase, account)
 
     expect(result).toEqual({ processed: 1, errors: 1 })
-    expect(findFiscalDocumentMock).toHaveBeenCalledTimes(2)
+    expect(lookupInvoiceMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('routes to the filial Omie account when logistic_type is "fulfillment" and to matriz otherwise', async () => {
+    const pendingOrders = [
+      { id: 'order-full', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: 'fulfillment' },
+      { id: 'order-self', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: 'self_service' },
+    ]
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({ eq: () => ({ is: async () => ({ data: pendingOrders, error: null }) }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'order_items') {
+          return {
+            select: () => ({ eq: async () => ({ data: [], error: null }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
+
+    await retryPendingFiscalDocuments(supabase, account)
+
+    expect(lookupInvoiceMock).toHaveBeenNthCalledWith(1, 'filial', 111, new Date('2026-08-01T10:00:00.000Z'))
+    expect(lookupInvoiceMock).toHaveBeenNthCalledWith(2, 'matriz', 222, new Date('2026-08-01T10:00:00.000Z'))
   })
 })
