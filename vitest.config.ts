@@ -8,8 +8,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     clearMocks: true,
+    setupFiles: ['./vitest.setup.ts'],
   },
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { '@': path.resolve(__dirname, './src'), 'server-only': path.resolve(__dirname, './__mocks__/server-only.ts') },
   },
 })
