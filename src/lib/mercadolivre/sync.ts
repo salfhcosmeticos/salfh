@@ -72,9 +72,9 @@ export async function upsertOrder(
       nfNumber = invoice.invoiceNumber
       nfFetchedAt = new Date().toISOString()
       // The invoice's <cProd> is the same code as the order item's own SKU
-      // (order.items[].sellerSku, from Mercado Livre's seller_custom_field) -
-      // the seller's ERP (OMIE) prints it on the NF-e as "CÓDIGO PRODUTO"
-      // using that same value, so this is a reliable join key, not a guess.
+      // (order.items[].sellerSku, from Mercado Livre's seller_sku) - the
+      // seller's ERP (OMIE) prints it on the NF-e as "CÓDIGO PRODUTO" using
+      // that same value, so this is a reliable join key, not a guess.
       ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
     }
   } catch {

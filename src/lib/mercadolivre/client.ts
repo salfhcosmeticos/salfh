@@ -73,7 +73,7 @@ interface MercadoLivreOrderResponse {
   currency_id: string
   date_created: string
   order_items: {
-    item: { id: string; title: string; seller_custom_field?: string | null }
+    item: { id: string; title: string; seller_sku?: string | null; seller_custom_field?: string | null }
     quantity: number
     unit_price: number
     sale_fee?: number
@@ -100,7 +100,10 @@ function toOrder(response: MercadoLivreOrderResponse): MercadoLivreOrder {
       // which only exists once the invoice XML is fetched. This is also the
       // same code the seller's ERP (OMIE) prints as "CÓDIGO PRODUTO" on the
       // NF-e, so it doubles as the reliable join key for NCM matching.
-      sellerSku: entry.item.seller_custom_field ?? null,
+      // Confirmed against a real /orders/{id} response: the value lives in
+      // `seller_sku`, not `seller_custom_field` (which came back null on
+      // every order checked, despite the seller UI showing a SKU).
+      sellerSku: entry.item.seller_sku ?? entry.item.seller_custom_field ?? null,
     })),
     shippingId: response.shipping?.id ?? null,
     salesChannel: response.tags?.[0] ?? null,

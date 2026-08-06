@@ -64,7 +64,7 @@ describe('getOrder', () => {
         date_created: '2026-08-01T10:00:00.000-04:00',
         order_items: [
           {
-            item: { id: 'MLB1', title: 'Produto Teste', seller_custom_field: 'SF9004' },
+            item: { id: 'MLB1', title: 'Produto Teste', seller_sku: 'SF9004', seller_custom_field: null },
             quantity: 2,
             unit_price: 99.95,
             sale_fee: 18.5,
@@ -94,7 +94,7 @@ describe('getOrder', () => {
     expect(order.salesChannel).toBe('catalog_listing_eligible')
   })
 
-  it('maps sellerSku to null when the item has no seller_custom_field', async () => {
+  it('maps sellerSku to null when the item has neither seller_sku nor seller_custom_field', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -110,6 +110,26 @@ describe('getOrder', () => {
 
     const order = await getOrder('token-123', 124)
     expect(order.items[0].sellerSku).toBeNull()
+  })
+
+  it('falls back to seller_custom_field when seller_sku is absent', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 125,
+        status: 'paid',
+        total_amount: 50,
+        currency_id: 'BRL',
+        date_created: '2026-08-01T10:00:00.000-04:00',
+        order_items: [
+          { item: { id: 'MLB3', title: 'SKU legado', seller_custom_field: 'LEGADO-1' }, quantity: 1, unit_price: 50, sale_fee: 5 },
+        ],
+        shipping: null,
+      }),
+    }) as unknown as typeof fetch
+
+    const order = await getOrder('token-123', 125)
+    expect(order.items[0].sellerSku).toBe('LEGADO-1')
   })
 })
 
