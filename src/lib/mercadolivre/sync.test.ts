@@ -541,4 +541,183 @@ describe('retryPendingFiscalDocuments', () => {
       last_error: 'update rejected by RLS',
     })
   })
+
+  it('filters pending orders by account_id and nf_fetched_at is null', async () => {
+    const selectCalls: { eqArgs: unknown[]; isArgs: unknown[] }[] = []
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({
+              eq: (...eqArgs: unknown[]) => ({
+                is: async (...isArgs: unknown[]) => {
+                  selectCalls.push({ eqArgs, isArgs })
+                  return { data: [], error: null }
+                },
+              }),
+            }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+
+    await retryPendingFiscalDocuments(supabase, account)
+
+    expect(selectCalls).toHaveLength(1)
+    expect(selectCalls[0].eqArgs).toEqual(['account_id', 'account-1'])
+    expect(selectCalls[0].isArgs).toEqual(['nf_fetched_at', null])
+  })
+
+  it('leaves an order untouched and does not count it as an error when no fiscal document exists yet', async () => {
+    const orderUpdateCalls: unknown[] = []
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            update: (data: unknown) => ({
+              eq: async (col: string, id: string) => {
+                orderUpdateCalls.push({ data, col, id })
+                return { error: null }
+              },
+            }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+
+    const result = await retryPendingFiscalDocuments(supabase, account)
+
+    expect(result).toEqual({ processed: 0, errors: 0 })
+    expect(orderUpdateCalls).toHaveLength(0)
+  })
+
+  it('applies NCM only to the order_items row whose ml_item_id matches the invoice product code', async () => {
+    const itemUpdateCalls: { id: string; ncm: string }[] = []
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'order_items') {
+          return {
+            select: () => ({
+              eq: async () => ({
+                data: [
+                  { id: 'item-row-1', ml_item_id: 'MLB1' },
+                  { id: 'item-row-2', ml_item_id: 'MLB2' },
+                ],
+                error: null,
+              }),
+            }),
+            update: (data: { ncm: string }) => ({
+              eq: async (_col: string, id: string) => {
+                itemUpdateCalls.push({ id, ncm: data.ncm })
+                return { error: null }
+              },
+            }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
+
+    await retryPendingFiscalDocuments(supabase, account)
+
+    expect(itemUpdateCalls).toEqual([{ id: 'item-row-1', ncm: '33059000' }])
+  })
+
+  it('isolates a failure at the fiscal-document-fetch stage so the rest of the batch still processes', async () => {
+    const pendingOrders = [
+      { id: 'order-fail', ml_order_id: 111 },
+      { id: 'order-ok', ml_order_id: 222 },
+    ]
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({ eq: () => ({ is: async () => ({ data: pendingOrders, error: null }) }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'order_items') {
+          return {
+            select: () => ({ eq: async () => ({ data: [], error: null }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    const findFiscalDocumentMock = vi.spyOn(client, 'findFiscalDocumentForOrder')
+    findFiscalDocumentMock.mockRejectedValueOnce(new Error('Mercado Livre fiscal document download error: 500'))
+    findFiscalDocumentMock.mockResolvedValueOnce(null)
+
+    const result = await retryPendingFiscalDocuments(supabase, account)
+
+    expect(result).toEqual({ processed: 0, errors: 1 })
+  })
 })

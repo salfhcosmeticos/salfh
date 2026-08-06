@@ -1,6 +1,6 @@
 import cron from 'node-cron'
 import { createServiceClient } from '@/lib/supabase/server'
-import { reconcileRecentOrders, type StoredMercadoLivreAccount } from './sync'
+import { reconcileRecentOrders, retryPendingFiscalDocuments, type StoredMercadoLivreAccount } from './sync'
 
 export function startReconciliationCron() {
   cron.schedule('*/15 * * * *', async () => {
@@ -20,6 +20,7 @@ export function startReconciliationCron() {
         tokenExpiresAt: row.token_expires_at,
       }
       await reconcileRecentOrders(supabase, account, 2)
+      await retryPendingFiscalDocuments(supabase, account)
     }
   })
 }
