@@ -35,7 +35,10 @@ describe('AppSidebar', () => {
     const vendasLink = screen.getByRole('link', { name: /Vendas/ })
     expect(vendasLink.getAttribute('href')).toBe('/')
 
-    for (const label of ['Produtos', 'Estoque', 'Anúncios', 'Financeiro', 'Margem de contribuição', 'Integrações', 'Configurações']) {
+    const margemLink = screen.getByRole('link', { name: /Margem de contribuição/ })
+    expect(margemLink.getAttribute('href')).toBe('/margem-contribuicao')
+
+    for (const label of ['Produtos', 'Estoque', 'Anúncios', 'Financeiro', 'Integrações', 'Configurações']) {
       expect(screen.queryByRole('link', { name: new RegExp(label) })).toBeNull()
       expect(screen.getByText(new RegExp(label))).toBeTruthy()
     }

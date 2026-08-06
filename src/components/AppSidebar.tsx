@@ -26,7 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Estoque', href: null, icon: Warehouse },
   { label: 'Anúncios', href: null, icon: Megaphone },
   { label: 'Financeiro', href: null, icon: Wallet },
-  { label: 'Margem de contribuição', href: null, icon: PieChart },
+  { label: 'Margem de contribuição', href: '/margem-contribuicao', icon: PieChart },
   { label: 'Integrações', href: null, icon: Plug },
   { label: 'Configurações', href: null, icon: Settings },
 ]
