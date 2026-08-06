@@ -4,7 +4,13 @@ const PIS_CREDIT_RATE = 0.0165
 const COFINS_CREDIT_RATE = 0.076
 const ICMS_SHIPPING_CREDIT_RATE = 0.12
 
-export function icmsDebitRate(destinationState: string, ncm: string | null): number {
+const VALID_UFS = [
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
+  'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
+]
+
+export function icmsDebitRate(destinationState: string, ncm: string | null): number | null {
+  if (!VALID_UFS.includes(destinationState)) return null
   const isExemptCosmeticToParana = destinationState === 'PR' && ncm !== null && ICMS_EXEMPT_COSMETIC_NCMS.includes(ncm)
   if (isExemptCosmeticToParana) return 0
   if (destinationState === 'PR') return 0.195
@@ -43,13 +49,15 @@ export function calculateOrderMargin(input: OrderMarginInput): OrderMarginResult
   const creditIcmsOnShipping =
     input.shippingOrFeeType === 'frete' ? input.shippingOrFeeAmount * ICMS_SHIPPING_CREDIT_RATE : 0
 
-  if (input.nfPending || input.destinationState === null) {
+  const isValidDestination = input.destinationState !== null && VALID_UFS.includes(input.destinationState)
+
+  if (input.nfPending || !isValidDestination) {
     return { icmsDebit: null, netProfit: null, marginPct: null, creditPis, creditCofins, creditIcmsOnShipping }
   }
 
-  const destinationState = input.destinationState
+  const destinationState = input.destinationState as string
   const icmsDebit = input.items.reduce(
-    (sum, item) => sum + item.itemValue * icmsDebitRate(destinationState, item.ncm),
+    (sum, item) => sum + item.itemValue * (icmsDebitRate(destinationState, item.ncm) ?? 0),
     0
   )
   const netProfit = input.saleAmount - icmsDebit - input.shippingOrFeeAmount - input.commission

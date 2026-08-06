@@ -26,6 +26,12 @@ describe('icmsDebitRate', () => {
     expect(icmsDebitRate('BA', null)).toBe(0.07)
     expect(icmsDebitRate('AM', '33059000')).toBe(0.07)
   })
+
+  it('returns null for an unrecognized destination instead of guessing a default rate', () => {
+    expect(icmsDebitRate('São Paulo', null)).toBeNull()
+    expect(icmsDebitRate('XX', '33059000')).toBeNull()
+    expect(icmsDebitRate('', null)).toBeNull()
+  })
 })
 
 describe('calculateOrderMargin', () => {
@@ -80,6 +86,23 @@ describe('calculateOrderMargin', () => {
   it('returns icmsDebit: null when the destination state is not yet known', () => {
     const result = calculateOrderMargin({ ...baseInput, destinationState: null })
     expect(result.icmsDebit).toBeNull()
+  })
+
+  it('returns icmsDebit, netProfit and marginPct: null when destinationState is an unrecognized value (e.g. a full state name), while still computing the three credits', () => {
+    const result = calculateOrderMargin({ ...baseInput, destinationState: 'São Paulo' })
+    expect(result.icmsDebit).toBeNull()
+    expect(result.netProfit).toBeNull()
+    expect(result.marginPct).toBeNull()
+    expect(result.creditPis).toBeCloseTo((41.66 + 29) * 0.0165, 6)
+    expect(result.creditCofins).toBeCloseTo((41.66 + 29) * 0.076, 6)
+    expect(result.creditIcmsOnShipping).toBeCloseTo(29 * 0.12, 6)
+  })
+
+  it('returns icmsDebit, netProfit and marginPct: null when destinationState is an unrecognized two-letter code', () => {
+    const result = calculateOrderMargin({ ...baseInput, destinationState: 'XX' })
+    expect(result.icmsDebit).toBeNull()
+    expect(result.netProfit).toBeNull()
+    expect(result.marginPct).toBeNull()
   })
 
   it('applies the 0% exempt rate to a Parana order for the cosmetic NCM', () => {

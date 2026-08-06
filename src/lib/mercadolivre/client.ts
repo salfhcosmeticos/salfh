@@ -136,12 +136,19 @@ export interface MercadoLivreShipmentAddress {
 }
 
 interface MercadoLivreShipmentResponse {
-  receiver_address: { city: { name: string }; state: { name: string } }
+  receiver_address: { city: { name: string }; state: { id?: string; name: string } }
+}
+
+function extractUf(state: { id?: string; name: string }): string {
+  const idMatch = state.id?.match(/^BR-([A-Z]{2})$/)
+  if (idMatch) return idMatch[1]
+  if (/^[A-Z]{2}$/.test(state.name)) return state.name
+  return state.name // unrecognized shape; icmsDebitRate now rejects anything that isn't a real UF instead of silently guessing
 }
 
 export async function getShipmentAddress(accessToken: string, shippingId: number): Promise<MercadoLivreShipmentAddress> {
   const response = await mlGet<MercadoLivreShipmentResponse>(`/shipments/${shippingId}`, accessToken)
-  return { city: response.receiver_address.city.name, state: response.receiver_address.state.name }
+  return { city: response.receiver_address.city.name, state: extractUf(response.receiver_address.state) }
 }
 
 interface MercadoLivreShipmentCostsResponse {

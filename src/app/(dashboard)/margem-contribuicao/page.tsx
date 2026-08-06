@@ -96,17 +96,28 @@ export default async function MargemContribuicaoPage() {
 
   const now = new Date()
   const lastMonth = subMonths(now, 1)
-  const accumulated = summarizeMarginPeriod(results.map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost })))
+
+  const accumulatedResults = results
+  const currentMonthResults = results.filter((r) => isSameMonth(new Date(r.row.orderDate), now))
+  const previousMonthResults = results.filter((r) => isSameMonth(new Date(r.row.orderDate), lastMonth))
+
+  const accumulated = summarizeMarginPeriod(accumulatedResults.map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost })))
   const currentMonth = summarizeMarginPeriod(
-    results
-      .filter((r) => isSameMonth(new Date(r.row.orderDate), now))
-      .map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost }))
+    currentMonthResults.map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost }))
   )
   const previousMonth = summarizeMarginPeriod(
-    results
-      .filter((r) => isSameMonth(new Date(r.row.orderDate), lastMonth))
-      .map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost }))
+    previousMonthResults.map((r) => ({ netProfit: r.margin.netProfit, productCost: r.productCost }))
   )
+
+  // How many orders in each period actually fed the card above vs. how many
+  // exist in total - orders missing a registered cost or a fetched invoice
+  // are silently excluded from the sums, and without this the owner has no
+  // way to tell a swing in the percentage from a change in coverage.
+  const countIncluded = (periodResults: typeof results) =>
+    periodResults.filter((r) => r.productCost !== null && r.margin.netProfit !== null).length
+  const accumulatedCoverage = { included: countIncluded(accumulatedResults), total: accumulatedResults.length }
+  const currentMonthCoverage = { included: countIncluded(currentMonthResults), total: currentMonthResults.length }
+  const previousMonthCoverage = { included: countIncluded(previousMonthResults), total: previousMonthResults.length }
 
   return (
     <div className="flex flex-col gap-4">
@@ -123,6 +134,9 @@ export default async function MargemContribuicaoPage() {
           <CardContent>
             <p className="text-2xl font-bold">{accumulated.marginPct === null ? '—' : `${accumulated.marginPct.toFixed(1)}%`}</p>
             <p className="text-xs text-muted-foreground">Margem sobre custo</p>
+            <p className="text-xs text-muted-foreground">
+              {accumulatedCoverage.included} de {accumulatedCoverage.total} pedidos com custo e nota fiscal
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -132,6 +146,9 @@ export default async function MargemContribuicaoPage() {
           <CardContent>
             <p className="text-2xl font-bold">{currentMonth.marginPct === null ? '—' : `${currentMonth.marginPct.toFixed(1)}%`}</p>
             <p className="text-xs text-muted-foreground">Margem sobre custo</p>
+            <p className="text-xs text-muted-foreground">
+              {currentMonthCoverage.included} de {currentMonthCoverage.total} pedidos com custo e nota fiscal
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -141,6 +158,9 @@ export default async function MargemContribuicaoPage() {
           <CardContent>
             <p className="text-2xl font-bold">{previousMonth.marginPct === null ? '—' : `${previousMonth.marginPct.toFixed(1)}%`}</p>
             <p className="text-xs text-muted-foreground">Margem sobre custo</p>
+            <p className="text-xs text-muted-foreground">
+              {previousMonthCoverage.included} de {previousMonthCoverage.total} pedidos com custo e nota fiscal
+            </p>
           </CardContent>
         </Card>
       </div>

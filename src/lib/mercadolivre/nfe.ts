@@ -5,7 +5,7 @@ export interface NfeInvoiceData {
   items: { productCode: string; ncm: string }[]
 }
 
-const parser = new XMLParser()
+const parser = new XMLParser({ parseTagValue: false, processEntities: false })
 
 export function parseNfeXml(xml: string): NfeInvoiceData {
   const parsed = parser.parse(xml)

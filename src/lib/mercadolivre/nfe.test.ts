@@ -33,4 +33,16 @@ describe('parseNfeXml', () => {
   it('throws a clear error when the XML has no infNFe block', () => {
     expect(() => parseNfeXml('<not-an-nfe/>')).toThrow(/infNFe/)
   })
+
+  it('preserves leading zeros in NCM and cProd instead of letting the XML parser coerce them to numbers', () => {
+    const xml = `<?xml version="1.0"?>
+<nfeProc><NFe><infNFe>
+  <ide><nNF>123456</nNF></ide>
+  <det nItem="1"><prod><cProd>007</cProd><NCM>03051000</NCM></prod></det>
+</infNFe></NFe></nfeProc>`
+
+    const result = parseNfeXml(xml)
+
+    expect(result.items).toEqual([{ productCode: '007', ncm: '03051000' }])
+  })
 })

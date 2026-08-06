@@ -170,12 +170,17 @@ describe('upsertOrder - margin data', () => {
     expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: null, nf_fetched_at: null }) })
   })
 
-  it('sets nf_number, nf_fetched_at and each item ncm when a fiscal document is found', async () => {
+  it('sets nf_number, nf_fetched_at and each item ncm (matched positionally, not by product code) when a fiscal document is found', async () => {
     const { client: supabase, orderUpsertCalls, itemsUpsertCalls } = createFakeSupabase()
     vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    // The invoice's <cProd> ("SF9004") deliberately does NOT match the order
+    // item's ml_item_id ("MLB1") - cProd is the seller's own ERP code, an
+    // unrelated identifier from ml_item_id. This proves NCM matching no
+    // longer depends on the two coinciding; it only depends on both lists
+    // having the same item count (matched positionally).
     vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
       '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
     )
 
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder)
@@ -184,6 +189,33 @@ describe('upsertOrder - margin data', () => {
     expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_fetched_at: expect.any(String) }) })
     expect(itemsUpsertCalls[0]).toMatchObject({
       data: [expect.objectContaining({ ml_item_id: 'MLB1', ncm: '33059000' })],
+    })
+  })
+
+  it('leaves ncm null for every item when the order and invoice item counts do not match', async () => {
+    const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    // Order has 2 items, invoice only has 1 - positional matching must not
+    // guess, so ncm stays null for both rather than misapplying an NCM.
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
+    const order: MercadoLivreOrder = {
+      ...sampleOrder,
+      items: [
+        { mlItemId: 'MLB1', title: 'Produto 1', quantity: 1, unitPrice: 169.9, saleFee: 30 },
+        { mlItemId: 'MLB2', title: 'Produto 2', quantity: 1, unitPrice: 67, saleFee: 11.66 },
+      ],
+    }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(itemsUpsertCalls[0]).toMatchObject({
+      data: [
+        expect.objectContaining({ ml_item_id: 'MLB1', ncm: null }),
+        expect.objectContaining({ ml_item_id: 'MLB2', ncm: null }),
+      ],
     })
   })
 
@@ -496,7 +528,7 @@ describe('retryPendingFiscalDocuments', () => {
         }
         if (table === 'order_items') {
           return {
-            select: () => ({ eq: async () => ({ data: [], error: null }) }),
+            select: () => ({ eq: () => ({ order: async () => ({ data: [], error: null }) }) }),
             update: () => ({ eq: async () => ({ error: null }) }),
           }
         }
@@ -621,8 +653,9 @@ describe('retryPendingFiscalDocuments', () => {
     expect(orderUpdateCalls).toHaveLength(0)
   })
 
-  it('applies NCM only to the order_items row whose ml_item_id matches the invoice product code', async () => {
+  it('applies NCM by matching order_items to invoice lines positionally, not by product code', async () => {
     const itemUpdateCalls: { id: string; ncm: string }[] = []
+    let orderItemsOrderCalled = false
     const supabase = {
       from(table: string) {
         if (table === 'orders') {
@@ -634,12 +667,17 @@ describe('retryPendingFiscalDocuments', () => {
         if (table === 'order_items') {
           return {
             select: () => ({
-              eq: async () => ({
-                data: [
-                  { id: 'item-row-1', ml_item_id: 'MLB1' },
-                  { id: 'item-row-2', ml_item_id: 'MLB2' },
-                ],
-                error: null,
+              eq: () => ({
+                order: async () => {
+                  orderItemsOrderCalled = true
+                  return {
+                    data: [
+                      { id: 'item-row-1', ml_item_id: 'MLB1' },
+                      { id: 'item-row-2', ml_item_id: 'MLB2' },
+                    ],
+                    error: null,
+                  }
+                },
               }),
             }),
             update: (data: { ncm: string }) => ({
@@ -667,14 +705,83 @@ describe('retryPendingFiscalDocuments', () => {
     }
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
     vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    // Invoice cProd values ("SF9004", "SF9846") deliberately do not match
+    // either order_items row's ml_item_id ("MLB1", "MLB2") - proving the
+    // match is positional (by array index / query order), not code-based.
     vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
       '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
-        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det>' +
+        '<det nItem="2"><prod><cProd>SF9846</cProd><NCM>33051000</NCM></prod></det></infNFe></NFe></nfeProc>'
     )
 
     await retryPendingFiscalDocuments(supabase, account)
 
-    expect(itemUpdateCalls).toEqual([{ id: 'item-row-1', ncm: '33059000' }])
+    expect(orderItemsOrderCalled).toBe(true)
+    expect(itemUpdateCalls).toEqual([
+      { id: 'item-row-1', ncm: '33059000' },
+      { id: 'item-row-2', ncm: '33051000' },
+    ])
+  })
+
+  it('leaves order_items untouched when the order and invoice item counts do not match', async () => {
+    const itemUpdateCalls: unknown[] = []
+    const supabase = {
+      from(table: string) {
+        if (table === 'orders') {
+          return {
+            select: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'order-1', ml_order_id: 111 }], error: null }) }) }),
+            update: () => ({ eq: async () => ({ error: null }) }),
+          }
+        }
+        if (table === 'order_items') {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: async () => ({
+                  data: [
+                    { id: 'item-row-1', ml_item_id: 'MLB1' },
+                    { id: 'item-row-2', ml_item_id: 'MLB2' },
+                  ],
+                  error: null,
+                }),
+              }),
+            }),
+            update: (data: unknown) => ({
+              eq: async (_col: string, id: string) => {
+                itemUpdateCalls.push({ id, data })
+                return { error: null }
+              },
+            }),
+          }
+        }
+        if (table === 'sync_runs') {
+          return { insert: async () => ({ error: null }) }
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      },
+    } as unknown as SupabaseClient
+
+    const account = {
+      id: 'account-1',
+      userId: 'user-1',
+      mlUserId: 999,
+      accessToken: 'token-abc',
+      refreshToken: 'refresh-abc',
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }
+    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    // Order has 2 order_items rows but the invoice only has 1 <det> - counts
+    // disagree, so no NCM should be guessed/applied to either row.
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>SF9004</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
+
+    const result = await retryPendingFiscalDocuments(supabase, account)
+
+    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(itemUpdateCalls).toEqual([])
   })
 
   it('isolates a failure at the fiscal-document-fetch stage so the rest of the batch still processes', async () => {
@@ -692,7 +799,7 @@ describe('retryPendingFiscalDocuments', () => {
         }
         if (table === 'order_items') {
           return {
-            select: () => ({ eq: async () => ({ data: [], error: null }) }),
+            select: () => ({ eq: () => ({ order: async () => ({ data: [], error: null }) }) }),
             update: () => ({ eq: async () => ({ error: null }) }),
           }
         }

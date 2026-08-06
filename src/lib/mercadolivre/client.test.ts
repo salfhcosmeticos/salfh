@@ -143,7 +143,18 @@ describe('getOrder rate limiting', () => {
 })
 
 describe('getShipmentAddress', () => {
-  it('maps the shipment receiver address to city and state', async () => {
+  it('extracts the two-letter UF from a "BR-XX" state id', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { id: 'BR-PR', name: 'Paraná' } } }),
+    }) as unknown as typeof fetch
+
+    const address = await getShipmentAddress('token', 987654)
+
+    expect(address).toEqual({ city: 'Curitiba', state: 'PR' })
+  })
+
+  it('falls back to state.name when it is already a two-letter code and there is no id', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { name: 'PR' } } }),
@@ -152,6 +163,17 @@ describe('getShipmentAddress', () => {
     const address = await getShipmentAddress('token', 987654)
 
     expect(address).toEqual({ city: 'Curitiba', state: 'PR' })
+  })
+
+  it('falls back to the raw state.name when neither a "BR-XX" id nor a two-letter name is present', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { name: 'Paraná' } } }),
+    }) as unknown as typeof fetch
+
+    const address = await getShipmentAddress('token', 987654)
+
+    expect(address).toEqual({ city: 'Curitiba', state: 'Paraná' })
   })
 })
 
