@@ -1,7 +1,19 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { subMonths } from 'date-fns'
 import type { MercadoLivreOrder } from './client'
-import { getValidAccessToken, searchOrders, getOrder } from './client'
+import {
+  getValidAccessToken,
+  searchOrders,
+  getOrder,
+  getShipmentAddress,
+  getShipmentSellerCost,
+  getBillingInfo,
+  findFiscalDocumentForOrder,
+  downloadFiscalDocumentXml,
+} from './client'
+import { parseNfeXml } from './nfe'
+
+const FREE_SHIPPING_THRESHOLD = 79
 
 export interface StoredMercadoLivreAccount {
   id: string
@@ -14,10 +26,58 @@ export interface StoredMercadoLivreAccount {
 
 export async function upsertOrder(
   supabase: SupabaseClient,
+  accessToken: string,
   accountId: string,
   userId: string,
   order: MercadoLivreOrder
 ): Promise<void> {
+  const commission = order.items.reduce((sum, item) => sum + item.saleFee, 0)
+  const shippingOrFeeType: 'frete' | 'taxa_fixa' =
+    order.totalAmount >= FREE_SHIPPING_THRESHOLD ? 'frete' : 'taxa_fixa'
+
+  let shippingOrFeeAmount = 0
+  let destinationCity: string | null = null
+  let destinationState: string | null = null
+  if (order.shippingId !== null) {
+    try {
+      const address = await getShipmentAddress(accessToken, order.shippingId)
+      destinationCity = address.city
+      destinationState = address.state
+      if (shippingOrFeeType === 'frete') {
+        shippingOrFeeAmount = await getShipmentSellerCost(accessToken, order.shippingId)
+      }
+    } catch {
+      // Shipment data not available yet or the call failed. Leave the
+      // destination/shipping fields null/0 - the reconciliation retry
+      // (retryPendingFiscalDocuments does not cover this path, only NF; a
+      // later order-level reconciliation pass will re-upsert and try again).
+    }
+  }
+
+  let buyerName: string | null = null
+  try {
+    buyerName = (await getBillingInfo(accessToken, order.id)).buyerName
+  } catch {
+    // Buyer billing info can be genuinely unavailable; never block the sync on it.
+  }
+
+  let nfNumber: string | null = null
+  let nfFetchedAt: string | null = null
+  let ncmByItemCode: Record<string, string> = {}
+  try {
+    const fiscalDocument = await findFiscalDocumentForOrder(accessToken, order.id)
+    if (fiscalDocument) {
+      const xml = await downloadFiscalDocumentXml(accessToken, fiscalDocument.documentItemId)
+      const invoice = parseNfeXml(xml)
+      nfNumber = invoice.invoiceNumber
+      nfFetchedAt = new Date().toISOString()
+      ncmByItemCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
+    }
+  } catch {
+    // No fiscal document yet is expected, not an error - nf_fetched_at stays
+    // null and retryPendingFiscalDocuments (Task 6) tries again later.
+  }
+
   const { data: orderRow, error: orderError } = await supabase
     .from('orders')
     .upsert(
@@ -30,6 +90,15 @@ export async function upsertOrder(
         currency_id: order.currencyId,
         order_date: order.dateCreated,
         updated_at: new Date().toISOString(),
+        ml_commission: commission,
+        shipping_or_fee_amount: shippingOrFeeAmount,
+        shipping_or_fee_type: shippingOrFeeType,
+        destination_city: destinationCity,
+        destination_state: destinationState,
+        buyer_name: buyerName,
+        sales_channel: order.salesChannel,
+        nf_number: nfNumber,
+        nf_fetched_at: nfFetchedAt,
       },
       { onConflict: 'account_id,ml_order_id' }
     )
@@ -51,6 +120,7 @@ export async function upsertOrder(
     title: item.title,
     quantity: item.quantity,
     unit_price: item.unitPrice,
+    ncm: ncmByItemCode[item.mlItemId] ?? null,
   }))
 
   const { error: itemsError } = await supabase
@@ -138,7 +208,7 @@ async function syncOrdersWindow(
       total = page.total
       for (const order of page.orders) {
         try {
-          await upsertOrder(supabase, account.id, account.userId, order)
+          await upsertOrder(supabase, accessToken, account.id, account.userId, order)
           processed += 1
         } catch (error) {
           errors += 1
@@ -309,7 +379,7 @@ export async function handleMercadoLivreWebhook(
       await persistRefreshedTokens(supabase, storedAccount.id)
     )
     const order = await getOrder(accessToken, orderId)
-    await upsertOrder(supabase, storedAccount.id, storedAccount.userId, order)
+    await upsertOrder(supabase, accessToken, storedAccount.id, storedAccount.userId, order)
     processed = 1
   } catch (err) {
     errors = 1
@@ -321,4 +391,62 @@ export async function handleMercadoLivreWebhook(
     errors,
     lastError,
   })
+}
+
+export async function retryPendingFiscalDocuments(
+  supabase: SupabaseClient,
+  account: StoredMercadoLivreAccount
+): Promise<{ processed: number; errors: number }> {
+  let processed = 0
+  let errors = 0
+  let lastError: string | undefined
+
+  try {
+    const accessToken = await getValidAccessToken(account, await persistRefreshedTokens(supabase, account.id))
+
+    const { data: pendingOrders, error: queryError } = await supabase
+      .from('orders')
+      .select('id, ml_order_id')
+      .eq('account_id', account.id)
+      .is('nf_fetched_at', null)
+
+    if (queryError) {
+      throw new Error(queryError.message)
+    }
+
+    for (const pendingOrder of pendingOrders ?? []) {
+      try {
+        const fiscalDocument = await findFiscalDocumentForOrder(accessToken, pendingOrder.ml_order_id)
+        if (!fiscalDocument) continue // still not issued - try again on a later pass, not an error
+
+        const xml = await downloadFiscalDocumentXml(accessToken, fiscalDocument.documentItemId)
+        const invoice = parseNfeXml(xml)
+        const ncmByItemCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
+
+        await supabase
+          .from('orders')
+          .update({ nf_number: invoice.invoiceNumber, nf_fetched_at: new Date().toISOString() })
+          .eq('id', pendingOrder.id)
+
+        const { data: items } = await supabase.from('order_items').select('id, ml_item_id').eq('order_id', pendingOrder.id)
+        for (const item of items ?? []) {
+          const ncm = ncmByItemCode[item.ml_item_id]
+          if (ncm) {
+            await supabase.from('order_items').update({ ncm }).eq('id', item.id)
+          }
+        }
+
+        processed += 1
+      } catch (error) {
+        errors += 1
+        lastError = error instanceof Error ? error.message : String(error)
+      }
+    }
+  } catch (error) {
+    errors += 1
+    lastError = error instanceof Error ? error.message : String(error)
+  }
+
+  await recordSyncRun(supabase, account.id, account.userId, 'reconciliation', { processed, errors, lastError })
+  return { processed, errors }
 }

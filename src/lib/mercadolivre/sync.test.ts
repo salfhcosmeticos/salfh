@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   upsertOrder,
@@ -89,10 +89,15 @@ const sampleOrder: MercadoLivreOrder = {
   salesChannel: null,
 }
 
+beforeEach(() => {
+  vi.spyOn(client, 'getBillingInfo').mockResolvedValue({ buyerName: null })
+  vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+})
+
 describe('upsertOrder', () => {
   it('upserts the order row keyed by account_id + ml_order_id', async () => {
     const { client, orderUpsertCalls } = createFakeSupabase()
-    await upsertOrder(client, 'account-1', 'user-1', sampleOrder)
+    await upsertOrder(client, 'token-abc', 'account-1', 'user-1', sampleOrder)
     expect(orderUpsertCalls).toHaveLength(1)
     expect(orderUpsertCalls[0]).toMatchObject({
       opts: { onConflict: 'account_id,ml_order_id' },
@@ -102,11 +107,95 @@ describe('upsertOrder', () => {
 
   it('upserts order items keyed by order_id + ml_item_id', async () => {
     const { client, itemsUpsertCalls } = createFakeSupabase()
-    await upsertOrder(client, 'account-1', 'user-1', sampleOrder)
+    await upsertOrder(client, 'token-abc', 'account-1', 'user-1', sampleOrder)
     expect(itemsUpsertCalls).toHaveLength(1)
     expect(itemsUpsertCalls[0]).toMatchObject({
       opts: { onConflict: 'order_id,ml_item_id' },
       data: [expect.objectContaining({ order_id: 'order-row-1', user_id: 'user-1', ml_item_id: 'MLB1' })],
+    })
+  })
+})
+
+describe('upsertOrder - margin data', () => {
+  it('stores commission as the sum of each item sale_fee', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    const order: MercadoLivreOrder = {
+      ...sampleOrder,
+      items: [
+        { mlItemId: 'MLB1', title: 'Produto 1', quantity: 1, unitPrice: 169.9, saleFee: 30 },
+        { mlItemId: 'MLB2', title: 'Produto 2', quantity: 1, unitPrice: 67, saleFee: 11.66 },
+      ],
+    }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ ml_commission: 41.66 }) })
+  })
+
+  it('uses shipping_or_fee_type "frete" and the seller shipment cost when sale amount is >= 79', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR' })
+    const getShipmentSellerCostMock = vi.spyOn(client, 'getShipmentSellerCost').mockResolvedValue(29)
+    const order: MercadoLivreOrder = { ...sampleOrder, totalAmount: 236.9, shippingId: 987654 }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(getShipmentSellerCostMock).toHaveBeenCalledWith('token-abc', 987654)
+    expect(orderUpsertCalls[0]).toMatchObject({
+      data: expect.objectContaining({ shipping_or_fee_type: 'frete', shipping_or_fee_amount: 29 }),
+    })
+  })
+
+  it('uses shipping_or_fee_type "taxa_fixa" and does not call getShipmentSellerCost when sale amount is < 79', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR' })
+    const getShipmentSellerCostMock = vi.spyOn(client, 'getShipmentSellerCost')
+    const order: MercadoLivreOrder = { ...sampleOrder, totalAmount: 50, shippingId: 987654 }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect(getShipmentSellerCostMock).not.toHaveBeenCalled()
+    expect(orderUpsertCalls[0]).toMatchObject({
+      data: expect.objectContaining({ shipping_or_fee_type: 'taxa_fixa', shipping_or_fee_amount: 0 }),
+    })
+  })
+
+  it('leaves nf_number and nf_fetched_at null and does not throw when no fiscal document is found', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue(null)
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder)
+
+    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: null, nf_fetched_at: null }) })
+  })
+
+  it('sets nf_number, nf_fetched_at and each item ncm when a fiscal document is found', async () => {
+    const { client: supabase, orderUpsertCalls, itemsUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'findFiscalDocumentForOrder').mockResolvedValue({ documentItemId: 'doc-item-1' })
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>123456</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder)
+
+    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: '123456' }) })
+    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_fetched_at: expect.any(String) }) })
+    expect(itemsUpsertCalls[0]).toMatchObject({
+      data: [expect.objectContaining({ ml_item_id: 'MLB1', ncm: '33059000' })],
+    })
+  })
+
+  it('leaves destination_city/state and buyer_name null without throwing when those calls fail', async () => {
+    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
+    vi.spyOn(client, 'getShipmentAddress').mockRejectedValue(new Error('shipment not ready'))
+    vi.spyOn(client, 'getBillingInfo').mockRejectedValue(new Error('billing info unavailable'))
+    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
+
+    await expect(upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)).resolves.toBeUndefined()
+
+    expect(orderUpsertCalls[0]).toMatchObject({
+      data: expect.objectContaining({ destination_city: null, destination_state: null, buyer_name: null }),
     })
   })
 })
