@@ -1,14 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import {
-  getValidAccessToken,
-  getOrder,
-  searchOrders,
-  getShipmentAddress,
-  getShipmentSellerCost,
-  getBillingInfo,
-  findFiscalDocumentForOrder,
-  downloadFiscalDocumentXml,
-} from './client'
+import { getValidAccessToken, getOrder, searchOrders, getShipmentAddress, getShipmentSellerCost, getBillingInfo } from './client'
 import * as oauth from './oauth'
 
 const originalFetch = global.fetch
@@ -262,36 +253,5 @@ describe('getBillingInfo', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }) as unknown as typeof fetch
 
     expect(await getBillingInfo('token', 123)).toEqual({ buyerName: null })
-  })
-})
-
-describe('findFiscalDocumentForOrder', () => {
-  it('returns the first document item id when a fiscal document exists', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [{ items: [{ id: 'doc-item-1' }] }] }),
-    }) as unknown as typeof fetch
-
-    expect(await findFiscalDocumentForOrder('token', 123)).toEqual({ documentItemId: 'doc-item-1' })
-  })
-
-  it('returns null when no fiscal document exists yet', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ results: [] }) }) as unknown as typeof fetch
-
-    expect(await findFiscalDocumentForOrder('token', 123)).toBeNull()
-  })
-})
-
-describe('downloadFiscalDocumentXml', () => {
-  it('returns the response body text', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => '<xml/>' }) as unknown as typeof fetch
-
-    expect(await downloadFiscalDocumentXml('token', 'doc-item-1')).toBe('<xml/>')
-  })
-
-  it('throws when the download response is not ok', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
-
-    await expect(downloadFiscalDocumentXml('token', 'doc-item-1')).rejects.toThrow('404')
   })
 })

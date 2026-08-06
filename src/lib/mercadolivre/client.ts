@@ -191,29 +191,3 @@ export async function getBillingInfo(accessToken: string, orderId: number): Prom
   return { buyerName: info.last_name ? `${info.name} ${info.last_name}` : info.name }
 }
 
-export interface MercadoLivreFiscalDocumentRef {
-  documentItemId: string
-}
-
-interface MercadoLivreFiscalDocumentsResponse {
-  results: { items: { id: string }[] }[]
-}
-
-export async function findFiscalDocumentForOrder(
-  accessToken: string,
-  orderId: number
-): Promise<MercadoLivreFiscalDocumentRef | null> {
-  const response = await mlGet<MercadoLivreFiscalDocumentsResponse>(`/v2/fiscalDocuments?orderId=${orderId}`, accessToken)
-  const documentItemId = response.results[0]?.items[0]?.id
-  return documentItemId ? { documentItemId } : null
-}
-
-export async function downloadFiscalDocumentXml(accessToken: string, documentItemId: string): Promise<string> {
-  const response = await fetch(`${ML_API_BASE}/v2/fiscalDocuments/download/${documentItemId}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  if (!response.ok) {
-    throw new Error(`Mercado Livre fiscal document download error: ${response.status}`)
-  }
-  return response.text()
-}
