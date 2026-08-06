@@ -64,6 +64,12 @@ describe('calculateOrderMargin', () => {
     expect(result.netProfit).not.toBeNull()
   })
 
+  it('returns marginPct: null when product cost is registered as zero, without affecting netProfit', () => {
+    const result = calculateOrderMargin({ ...baseInput, productCost: 0 })
+    expect(result.marginPct).toBeNull()
+    expect(result.netProfit).not.toBeNull()
+  })
+
   it('returns icmsDebit, netProfit and marginPct: null when the invoice has not been fetched yet', () => {
     const result = calculateOrderMargin({ ...baseInput, nfPending: true })
     expect(result.icmsDebit).toBeNull()
@@ -79,6 +85,18 @@ describe('calculateOrderMargin', () => {
   it('applies the 0% exempt rate to a Parana order for the cosmetic NCM', () => {
     const result = calculateOrderMargin({ ...baseInput, destinationState: 'PR' })
     expect(result.icmsDebit).toBe(0)
+  })
+
+  it('sums ICMS per item using each item\'s own NCM, not one rate for the whole order', () => {
+    const result = calculateOrderMargin({
+      ...baseInput,
+      destinationState: 'PR',
+      items: [
+        { itemValue: 169.9, ncm: '33059000' }, // exempt cosmetic -> 0%
+        { itemValue: 67, ncm: '12345678' },    // non-exempt -> 19.5%
+      ],
+    })
+    expect(result.icmsDebit).toBeCloseTo(13.065, 3) // 169.9*0 + 67*0.195
   })
 
   it('computes PIS, COFINS and ICMS-on-shipping credits from commission and shipping even when the NF is pending', () => {
