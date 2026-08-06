@@ -189,15 +189,18 @@ describe('getOrder rate limiting', () => {
 })
 
 describe('getShipmentAddress', () => {
-  it('extracts the two-letter UF from a "BR-XX" state id', async () => {
+  it('extracts the two-letter UF from a "BR-XX" state id and the logistic type', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { id: 'BR-PR', name: 'Paraná' } } }),
+      json: async () => ({
+        receiver_address: { city: { name: 'Curitiba' }, state: { id: 'BR-PR', name: 'Paraná' } },
+        logistic_type: 'fulfillment',
+      }),
     }) as unknown as typeof fetch
 
     const address = await getShipmentAddress('token', 987654)
 
-    expect(address).toEqual({ city: 'Curitiba', state: 'PR' })
+    expect(address).toEqual({ city: 'Curitiba', state: 'PR', logisticType: 'fulfillment' })
   })
 
   it('falls back to state.name when it is already a two-letter code and there is no id', async () => {
@@ -208,7 +211,7 @@ describe('getShipmentAddress', () => {
 
     const address = await getShipmentAddress('token', 987654)
 
-    expect(address).toEqual({ city: 'Curitiba', state: 'PR' })
+    expect(address).toEqual({ city: 'Curitiba', state: 'PR', logisticType: null })
   })
 
   it('falls back to the raw state.name when neither a "BR-XX" id nor a two-letter name is present', async () => {
@@ -219,7 +222,18 @@ describe('getShipmentAddress', () => {
 
     const address = await getShipmentAddress('token', 987654)
 
-    expect(address).toEqual({ city: 'Curitiba', state: 'Paraná' })
+    expect(address).toEqual({ city: 'Curitiba', state: 'Paraná', logisticType: null })
+  })
+
+  it('returns logisticType: null when the response has no logistic_type field', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ receiver_address: { city: { name: 'Curitiba' }, state: { id: 'BR-SP', name: 'São Paulo' } } }),
+    }) as unknown as typeof fetch
+
+    const address = await getShipmentAddress('token', 987654)
+
+    expect(address.logisticType).toBeNull()
   })
 })
 

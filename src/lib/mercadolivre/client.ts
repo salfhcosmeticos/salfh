@@ -143,10 +143,12 @@ export async function searchOrders(
 export interface MercadoLivreShipmentAddress {
   city: string
   state: string
+  logisticType: string | null
 }
 
 interface MercadoLivreShipmentResponse {
   receiver_address: { city: { name: string }; state: { id?: string; name: string } }
+  logistic_type?: string
 }
 
 function extractUf(state: { id?: string; name: string }): string {
@@ -158,7 +160,11 @@ function extractUf(state: { id?: string; name: string }): string {
 
 export async function getShipmentAddress(accessToken: string, shippingId: number): Promise<MercadoLivreShipmentAddress> {
   const response = await mlGet<MercadoLivreShipmentResponse>(`/shipments/${shippingId}`, accessToken)
-  return { city: response.receiver_address.city.name, state: extractUf(response.receiver_address.state) }
+  return {
+    city: response.receiver_address.city.name,
+    state: extractUf(response.receiver_address.state),
+    logisticType: response.logistic_type ?? null,
+  }
 }
 
 interface MercadoLivreShipmentCostsResponse {
