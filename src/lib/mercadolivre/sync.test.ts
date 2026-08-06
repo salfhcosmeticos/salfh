@@ -714,10 +714,15 @@ describe('retryPendingFiscalDocuments', () => {
     vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
     const findFiscalDocumentMock = vi.spyOn(client, 'findFiscalDocumentForOrder')
     findFiscalDocumentMock.mockRejectedValueOnce(new Error('Mercado Livre fiscal document download error: 500'))
-    findFiscalDocumentMock.mockResolvedValueOnce(null)
+    findFiscalDocumentMock.mockResolvedValueOnce({ documentItemId: 'doc-item-1' })
+    vi.spyOn(client, 'downloadFiscalDocumentXml').mockResolvedValue(
+      '<?xml version="1.0"?><nfeProc><NFe><infNFe><ide><nNF>999</nNF></ide>' +
+        '<det nItem="1"><prod><cProd>MLB1</cProd><NCM>33059000</NCM></prod></det></infNFe></NFe></nfeProc>'
+    )
 
     const result = await retryPendingFiscalDocuments(supabase, account)
 
-    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(result).toEqual({ processed: 1, errors: 1 })
+    expect(findFiscalDocumentMock).toHaveBeenCalledTimes(2)
   })
 })
