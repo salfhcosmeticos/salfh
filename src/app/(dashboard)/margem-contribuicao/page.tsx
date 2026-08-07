@@ -1,6 +1,6 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { listProductCosts } from '@/lib/margin/productCosts'
-import { calculateOrderMargin, summarizeMarginPeriod } from '@/lib/margin/calculateMargin'
+import { calculateOrderMargin, summarizeMarginPeriod, type BillingCnpj } from '@/lib/margin/calculateMargin'
 import { formatCurrencyBRL } from '@/lib/format'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -16,6 +16,7 @@ interface OrderRow {
   buyerName: string | null
   destinationCity: string | null
   destinationState: string | null
+  cnpj: BillingCnpj
   salesChannel: string | null
   saleAmount: number
   commission: number
@@ -45,7 +46,7 @@ export default async function MargemContribuicaoPage() {
     supabase
       .from('orders')
       .select(
-        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, buyer_name, sales_channel, nf_number, nf_fetched_at, order_items(ml_item_id, product_code, title, quantity, unit_price, ncm)'
+        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, logistic_type, buyer_name, sales_channel, nf_number, nf_fetched_at, order_items(ml_item_id, product_code, title, quantity, unit_price, ncm)'
       )
       .order('order_date', { ascending: false }),
     listProductCosts(supabase),
@@ -59,6 +60,7 @@ export default async function MargemContribuicaoPage() {
     buyerName: order.buyer_name as string | null,
     destinationCity: order.destination_city as string | null,
     destinationState: order.destination_state as string | null,
+    cnpj: (order.logistic_type as string | null) === 'fulfillment' ? 'filial' : 'matriz',
     salesChannel: order.sales_channel as string | null,
     saleAmount: order.total_amount as number,
     commission: (order.ml_commission as number | null) ?? 0,
@@ -102,6 +104,7 @@ export default async function MargemContribuicaoPage() {
       items: row.items.map((item) => ({ itemValue: item.itemValue, ncm: item.ncm })),
       destinationState: row.destinationState,
       nfPending: row.nfPending,
+      cnpj: row.cnpj,
     })
 
     return { row, margin, productCost: anyCostMissing ? null : productCost }
