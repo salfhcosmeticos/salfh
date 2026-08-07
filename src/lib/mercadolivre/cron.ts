@@ -1,6 +1,7 @@
 import cron from 'node-cron'
 import { createServiceClient } from '@/lib/supabase/server'
-import { reconcileRecentOrders, retryPendingFiscalDocuments, type StoredMercadoLivreAccount } from './sync'
+import { reconcileRecentOrders, type StoredMercadoLivreAccount } from './sync'
+import { applyPendingOmieInvoices } from '@/lib/omie/pendingInvoices'
 
 export function startReconciliationCron() {
   cron.schedule('*/15 * * * *', async () => {
@@ -20,7 +21,10 @@ export function startReconciliationCron() {
         tokenExpiresAt: row.token_expires_at,
       }
       await reconcileRecentOrders(supabase, account, 2)
-      await retryPendingFiscalDocuments(supabase, account)
     }
+
+    // Account-agnostic (matches by ml_order_id, not tied to a specific
+    // marketplace_accounts row) - runs once per tick, not once per account.
+    await applyPendingOmieInvoices(supabase)
   })
 }
