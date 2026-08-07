@@ -13,6 +13,7 @@ interface OrderRow {
   orderDate: string
   mlOrderId: number
   nfNumber: string | null
+  nfeDanfeUrl: string | null
   buyerName: string | null
   destinationCity: string | null
   destinationState: string | null
@@ -46,7 +47,7 @@ export default async function MargemContribuicaoPage() {
     supabase
       .from('orders')
       .select(
-        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, logistic_type, buyer_name, sales_channel, nf_number, nf_fetched_at, order_items(ml_item_id, product_code, title, quantity, unit_price, ncm)'
+        'id, ml_order_id, order_date, total_amount, ml_commission, shipping_or_fee_amount, shipping_or_fee_type, destination_state, destination_city, logistic_type, buyer_name, sales_channel, nf_number, nf_fetched_at, nfe_danfe_url, order_items(ml_item_id, product_code, title, quantity, unit_price, ncm)'
       )
       .order('order_date', { ascending: false }),
     listProductCosts(supabase),
@@ -57,6 +58,7 @@ export default async function MargemContribuicaoPage() {
     orderDate: order.order_date as string,
     mlOrderId: order.ml_order_id as number,
     nfNumber: order.nf_number as string | null,
+    nfeDanfeUrl: order.nfe_danfe_url as string | null,
     buyerName: order.buyer_name as string | null,
     destinationCity: order.destination_city as string | null,
     destinationState: order.destination_state as string | null,
@@ -212,7 +214,17 @@ export default async function MargemContribuicaoPage() {
                 <TableRow key={row.id}>
                   <TableCell>{new Date(row.orderDate).toLocaleDateString('pt-BR')}</TableCell>
                   <TableCell>{row.mlOrderId}</TableCell>
-                  <TableCell>{row.nfPending ? 'aguardando XML' : row.nfNumber}</TableCell>
+                  <TableCell>
+                    {row.nfPending ? (
+                      'aguardando nota fiscal'
+                    ) : row.nfeDanfeUrl ? (
+                      <a href={row.nfeDanfeUrl} target="_blank" rel="noreferrer" className="underline">
+                        {row.nfNumber}
+                      </a>
+                    ) : (
+                      row.nfNumber
+                    )}
+                  </TableCell>
                   <TableCell>{row.buyerName ?? '—'}</TableCell>
                   <TableCell>
                     {row.destinationCity && row.destinationState ? `${row.destinationCity}/${row.destinationState}` : '—'}
@@ -225,16 +237,16 @@ export default async function MargemContribuicaoPage() {
                   <TableCell className="text-right">{formatCurrencyBRL(row.commission)}</TableCell>
                   <TableCell className="text-right">{formatCurrencyBRL(row.shippingOrFeeAmount)}</TableCell>
                   <TableCell className="text-right">
-                    {margin.icmsDebit === null ? 'aguardando XML' : formatCurrencyBRL(margin.icmsDebit)}
+                    {margin.icmsDebit === null ? 'aguardando nota fiscal' : formatCurrencyBRL(margin.icmsDebit)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {margin.netProfit === null ? 'aguardando XML' : formatCurrencyBRL(margin.netProfit)}
+                    {margin.netProfit === null ? 'aguardando nota fiscal' : formatCurrencyBRL(margin.netProfit)}
                   </TableCell>
                   <TableCell className="text-right">
                     {margin.marginPct === null
                       ? productCost === null
                         ? 'custo não cadastrado'
-                        : 'aguardando XML'
+                        : 'aguardando nota fiscal'
                       : `${margin.marginPct.toFixed(1)}%`}
                   </TableCell>
                   <TableCell className="text-right">{formatCurrencyBRL(margin.creditPis)}</TableCell>
