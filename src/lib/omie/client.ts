@@ -26,6 +26,42 @@ async function omiePost<T>(endpoint: string, call: string, account: OmieAccount,
   return response.json()
 }
 
+// Confirmed live (2026-08-07) that Omie's list endpoints (ListarPedidos,
+// ListarNF) respond with an HTTP error whose body is a "fault" - not a
+// normal 200 with an empty array - when a page/date-window genuinely has
+// zero matching records ("Não existem registros para a página [1]!",
+// faultcode SOAP-ENV:Client-5113). That's an expected empty-result outcome
+// for a paginated search, not a failure, so it must not throw. Every other
+// non-ok response (auth failure, malformed params, etc.) still throws.
+const NO_RECORDS_FAULT_CODE = 'SOAP-ENV:Client-5113'
+
+interface OmieFaultResponse {
+  faultstring?: string
+  faultcode?: string
+}
+
+async function omiePostListing<T>(
+  endpoint: string,
+  call: string,
+  account: OmieAccount,
+  param: Record<string, unknown>
+): Promise<T | null> {
+  const { appKey, appSecret } = getCredentials(account)
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ call, app_key: appKey, app_secret: appSecret, param: [param] }),
+  })
+  const body = await response.json()
+  if (!response.ok) {
+    if ((body as OmieFaultResponse).faultcode === NO_RECORDS_FAULT_CODE) {
+      return null
+    }
+    throw new Error(`Omie API error on ${call}: ${response.status}`)
+  }
+  return body as T
+}
+
 export function formatOmieDate(date: Date): string {
   const dd = String(date.getUTCDate()).padStart(2, '0')
   const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
@@ -89,12 +125,15 @@ export async function listarPedidos(
   dataInicial: string,
   dataFinal: string
 ): Promise<OmiePedidoPage> {
-  const response = await omiePost<OmieListarPedidosResponse>(OMIE_PEDIDO_ENDPOINT, 'ListarPedidos', account, {
+  const response = await omiePostListing<OmieListarPedidosResponse>(OMIE_PEDIDO_ENDPOINT, 'ListarPedidos', account, {
     pagina,
     registros_por_pagina: RECORDS_PER_PAGE,
     filtrar_por_data_de: dataInicial,
     filtrar_por_data_ate: dataFinal,
   })
+  if (!response) {
+    return { totalPaginas: 0, pedidos: [] }
+  }
   return {
     totalPaginas: response.total_de_paginas,
     pedidos: (response.pedido_venda_produto ?? []).map((p) => ({
@@ -132,12 +171,15 @@ export async function listarNF(
   dEmiInicial: string,
   dEmiFinal: string
 ): Promise<OmieNfPage> {
-  const response = await omiePost<OmieListarNfResponse>(OMIE_NF_ENDPOINT, 'ListarNF', account, {
+  const response = await omiePostListing<OmieListarNfResponse>(OMIE_NF_ENDPOINT, 'ListarNF', account, {
     pagina,
     registros_por_pagina: RECORDS_PER_PAGE,
     dEmiInicial,
     dEmiFinal,
   })
+  if (!response) {
+    return { totalPaginas: 0, notas: [] }
+  }
   return {
     totalPaginas: response.total_de_paginas,
     notas: (response.nfCadastro ?? []).map((nf) => ({ nIdNf: nf.compl.nIdNF, nIdPedido: nf.compl.nIdPedido })),

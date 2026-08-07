@@ -112,8 +112,29 @@ describe('listarPedidos', () => {
     })
   })
 
-  it('throws on an HTTP error', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as unknown as typeof fetch
+  it('returns an empty page (not an error) when Omie faults with "no records for this page"', async () => {
+    // Confirmed live 2026-08-07: Omie returns an HTTP error whose body is
+    // this specific fault - not a normal 200 with an empty array - when a
+    // date window genuinely has zero matching pedidos. This is an expected
+    // empty result for a paginated search, not a failure.
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        faultstring: 'ERROR: Não existem registros para a página [1]!',
+        faultcode: 'SOAP-ENV:Client-5113',
+      }),
+    }) as unknown as typeof fetch
+
+    expect(await listarPedidos('matriz', 1, '05/07/2026', '10/07/2026')).toEqual({ totalPaginas: 0, pedidos: [] })
+  })
+
+  it('throws on a genuine HTTP error (a different fault than "no records")', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ faultstring: 'ERROR: something else went wrong', faultcode: 'SOAP-ENV:Client-9999' }),
+    }) as unknown as typeof fetch
 
     await expect(listarPedidos('matriz', 1, '05/07/2026', '10/07/2026')).rejects.toThrow(
       'Omie API error on ListarPedidos: 500'
@@ -151,8 +172,25 @@ describe('listarNF', () => {
     expect(await listarNF('matriz', 1, '07/07/2026', '07/07/2026')).toEqual({ totalPaginas: 1, notas: [] })
   })
 
-  it('throws on an HTTP error', async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as unknown as typeof fetch
+  it('returns an empty page (not an error) when Omie faults with "no records for this page"', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        faultstring: 'ERROR: Não existem registros para a página [1]!',
+        faultcode: 'SOAP-ENV:Client-5113',
+      }),
+    }) as unknown as typeof fetch
+
+    expect(await listarNF('matriz', 1, '07/07/2026', '07/07/2026')).toEqual({ totalPaginas: 0, notas: [] })
+  })
+
+  it('throws on a genuine HTTP error (a different fault than "no records")', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ faultstring: 'ERROR: something else went wrong', faultcode: 'SOAP-ENV:Client-9999' }),
+    }) as unknown as typeof fetch
 
     await expect(listarNF('matriz', 1, '07/07/2026', '07/07/2026')).rejects.toThrow('Omie API error on ListarNF: 500')
   })
