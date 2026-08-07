@@ -43,7 +43,7 @@ export async function applyInvoiceToOrder(
   orderId: string,
   invoice: InvoiceToApply
 ): Promise<void> {
-  await supabase
+  const { error: orderUpdateError } = await supabase
     .from('orders')
     .update({
       nf_number: invoice.nfNumber,
@@ -53,12 +53,26 @@ export async function applyInvoiceToOrder(
     })
     .eq('id', orderId)
 
-  const { data: items } = await supabase.from('order_items').select('id, product_code').eq('order_id', orderId)
+  if (orderUpdateError) {
+    throw new Error(`Failed to update order ${orderId} with invoice data: ${orderUpdateError.message}`)
+  }
+
+  const { data: items, error: itemsQueryError } = await supabase
+    .from('order_items')
+    .select('id, product_code')
+    .eq('order_id', orderId)
+
+  if (itemsQueryError) {
+    throw new Error(`Failed to fetch order_items for order ${orderId}: ${itemsQueryError.message}`)
+  }
 
   for (const item of items ?? []) {
     const ncm = item.product_code ? invoice.ncmByProductCode[item.product_code] : undefined
     if (ncm) {
-      await supabase.from('order_items').update({ ncm }).eq('id', item.id)
+      const { error: itemUpdateError } = await supabase.from('order_items').update({ ncm }).eq('id', item.id)
+      if (itemUpdateError) {
+        throw new Error(`Failed to update NCM on order_item ${item.id}: ${itemUpdateError.message}`)
+      }
     }
   }
 }
@@ -89,13 +103,23 @@ export async function handleOmieWebhook(supabase: SupabaseClient, account: OmieA
   const invoice = parseOmieNfeXml(await xmlResponse.text())
   const ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
 
-  const { data: orderRow } = await supabase.from('orders').select('id').eq('ml_order_id', mlOrderId).maybeSingle()
+  const {
+    data: orderRow,
+    error: orderQueryError,
+  } = await supabase.from('orders').select('id').eq('ml_order_id', mlOrderId).maybeSingle()
+
+  if (orderQueryError) {
+    // A real DB error here must not be mistaken for "order not yet synced" -
+    // that would silently route a genuine failure into the pending-invoice
+    // branch instead of surfacing it to the route's .catch().
+    throw new Error(`Failed to look up order for ml_order_id ${mlOrderId}: ${orderQueryError.message}`)
+  }
 
   if (!orderRow) {
     // Order not synced from Mercado Livre yet - park it for
     // applyPendingOmieInvoices (Task 5) to pick up once it arrives, rather
     // than dropping a real invoice notification.
-    await supabase.from('pending_omie_invoices').upsert(
+    const { error: pendingUpsertError } = await supabase.from('pending_omie_invoices').upsert(
       {
         ml_order_id: mlOrderId,
         nf_number: event.numero_nf,
@@ -105,6 +129,9 @@ export async function handleOmieWebhook(supabase: SupabaseClient, account: OmieA
       },
       { onConflict: 'ml_order_id' }
     )
+    if (pendingUpsertError) {
+      throw new Error(`Failed to park pending Omie invoice for ml_order_id ${mlOrderId}: ${pendingUpsertError.message}`)
+    }
     return
   }
 

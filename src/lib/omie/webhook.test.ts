@@ -32,6 +32,8 @@ function createFakeSupabase() {
   const pendingUpsertCalls: unknown[] = []
   let orderRow: { id: string } | null = { id: 'order-row-1' }
   let items: { id: string; product_code: string | null }[] = [{ id: 'item-1', product_code: 'SF9004' }]
+  let orderUpdateError: { message: string } | null = null
+  let pendingUpsertError: { message: string } | null = null
 
   const supabaseClient = {
     from(table: string) {
@@ -41,7 +43,7 @@ function createFakeSupabase() {
           update: (data: unknown) => ({
             eq: async (_col: string, id: string) => {
               orderUpdateCalls.push({ data, id })
-              return { error: null }
+              return { error: orderUpdateError }
             },
           }),
         }
@@ -61,7 +63,7 @@ function createFakeSupabase() {
         return {
           upsert: async (data: unknown, opts: unknown) => {
             pendingUpsertCalls.push({ data, opts })
-            return { error: null }
+            return { error: pendingUpsertError }
           },
         }
       }
@@ -79,6 +81,12 @@ function createFakeSupabase() {
     },
     setItems: (rows: { id: string; product_code: string | null }[]) => {
       items = rows
+    },
+    setOrderUpdateError: (error: { message: string } | null) => {
+      orderUpdateError = error
+    },
+    setPendingUpsertError: (error: { message: string } | null) => {
+      pendingUpsertError = error
     },
   }
 }
@@ -154,6 +162,25 @@ describe('handleOmieWebhook', () => {
     const { client: supabase } = createFakeSupabase()
 
     await expect(handleOmieWebhook(supabase, 'matriz', VALID_PAYLOAD)).rejects.toThrow('Failed to download NFe XML: 500')
+  })
+
+  it('throws when the orders.update() call fails, rather than resolving silently', async () => {
+    vi.spyOn(client, 'consultarPedido').mockResolvedValue({ numeroPedidoCliente: '2000017307031470' })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_XML }) as unknown as typeof fetch
+    const { client: supabase, setOrderUpdateError } = createFakeSupabase()
+    setOrderUpdateError({ message: 'connection reset' })
+
+    await expect(handleOmieWebhook(supabase, 'matriz', VALID_PAYLOAD)).rejects.toThrow('connection reset')
+  })
+
+  it('throws when the pending_omie_invoices.upsert() call fails, rather than resolving silently', async () => {
+    vi.spyOn(client, 'consultarPedido').mockResolvedValue({ numeroPedidoCliente: '2000017307031470' })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => SAMPLE_XML }) as unknown as typeof fetch
+    const { client: supabase, setOrderRow, setPendingUpsertError } = createFakeSupabase()
+    setOrderRow(null)
+    setPendingUpsertError({ message: 'unique constraint violation' })
+
+    await expect(handleOmieWebhook(supabase, 'matriz', VALID_PAYLOAD)).rejects.toThrow('unique constraint violation')
   })
 })
 
