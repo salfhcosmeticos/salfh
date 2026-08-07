@@ -23,7 +23,10 @@ export function parseOmieNfeXml(xml: string): OmieNfeXmlData {
     throw new Error('XML da nota fiscal não contém o bloco infNFe esperado')
   }
 
-  const detList = Array.isArray(infNFe.det) ? infNFe.det : [infNFe.det]
+  // fast-xml-parser collapses a single <det> into an object, multiple <det>
+  // into an array, and an absent <det> (an NFe with no line items in the
+  // window queried) into undefined - normalize all three to an array.
+  const detList = Array.isArray(infNFe.det) ? infNFe.det : infNFe.det ? [infNFe.det] : []
 
   return {
     invoiceNumber: String(infNFe.ide.nNF),
