@@ -2,7 +2,6 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { subMonths } from 'date-fns'
 import type { MercadoLivreOrder } from './client'
 import { getValidAccessToken, searchOrders, getOrder, getShipmentAddress, getShipmentSellerCost, getBillingInfo } from './client'
-import { lookupInvoice } from '../omie/client'
 
 const FREE_SHIPPING_THRESHOLD = 79
 
@@ -41,9 +40,8 @@ export async function upsertOrder(
       }
     } catch {
       // Shipment data not available yet or the call failed. Leave the
-      // destination/shipping/logistic_type fields null/0 - the reconciliation
-      // retry (retryPendingFiscalDocuments does not cover this path, only NF; a
-      // later order-level reconciliation pass will re-upsert and try again).
+      // destination/shipping/logistic_type fields null/0 - a later
+      // order-level reconciliation pass will re-upsert and try again.
     }
   }
 
@@ -52,28 +50,6 @@ export async function upsertOrder(
     buyerName = (await getBillingInfo(accessToken, order.id)).buyerName
   } catch {
     // Buyer billing info can be genuinely unavailable; never block the sync on it.
-  }
-
-  let nfNumber: string | null = null
-  let nfFetchedAt: string | null = null
-  let ncmByProductCode: Record<string, string> = {}
-  try {
-    const omieAccount = logisticType === 'fulfillment' ? 'filial' : 'matriz'
-    const invoice = await lookupInvoice(omieAccount, order.id, new Date(order.dateCreated))
-    if (invoice) {
-      nfNumber = invoice.invoiceNumber
-      nfFetchedAt = new Date().toISOString()
-      // The invoice's product code is the same code as the order item's own
-      // SKU (order.items[].sellerSku, from Mercado Livre's seller_sku) - the
-      // seller's ERP (OMIE) prints it on the NF-e using that same value, so
-      // this is a reliable join key, not a guess.
-      ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
-    }
-  } catch {
-    // An Omie API failure (network error, auth failure, rate limit) must not
-    // block the rest of the sync - nf_fetched_at stays null and
-    // retryPendingFiscalDocuments (Task 6) retries later. A missing invoice
-    // (not yet issued) does not throw at all - that's the `if (invoice)` check.
   }
 
   const { data: orderRow, error: orderError } = await supabase
@@ -96,8 +72,6 @@ export async function upsertOrder(
         logistic_type: logisticType,
         buyer_name: buyerName,
         sales_channel: order.salesChannel,
-        nf_number: nfNumber,
-        nf_fetched_at: nfFetchedAt,
       },
       { onConflict: 'account_id,ml_order_id' }
     )
@@ -120,7 +94,6 @@ export async function upsertOrder(
     quantity: item.quantity,
     unit_price: item.unitPrice,
     product_code: item.sellerSku,
-    ncm: item.sellerSku ? (ncmByProductCode[item.sellerSku] ?? null) : null,
   }))
 
   const { error: itemsError } = await supabase
@@ -391,80 +364,4 @@ export async function handleMercadoLivreWebhook(
     errors,
     lastError,
   })
-}
-
-export async function retryPendingFiscalDocuments(
-  supabase: SupabaseClient,
-  account: StoredMercadoLivreAccount
-): Promise<{ processed: number; errors: number }> {
-  let processed = 0
-  let errors = 0
-  let lastError: string | undefined
-
-  try {
-    const accessToken = await getValidAccessToken(account, await persistRefreshedTokens(supabase, account.id))
-
-    const { data: pendingOrders, error: queryError } = await supabase
-      .from('orders')
-      .select('id, ml_order_id, order_date, logistic_type')
-      .eq('account_id', account.id)
-      .is('nf_fetched_at', null)
-
-    if (queryError) {
-      throw new Error(queryError.message)
-    }
-
-    for (const pendingOrder of pendingOrders ?? []) {
-      try {
-        const omieAccount = pendingOrder.logistic_type === 'fulfillment' ? 'filial' : 'matriz'
-        const invoice = await lookupInvoice(omieAccount, pendingOrder.ml_order_id, new Date(pendingOrder.order_date))
-        if (!invoice) continue // still not issued - try again on a later pass, not an error
-
-        const ncmByProductCode = Object.fromEntries(invoice.items.map((item) => [item.productCode, item.ncm]))
-
-        const { error: orderUpdateError } = await supabase
-          .from('orders')
-          .update({ nf_number: invoice.invoiceNumber, nf_fetched_at: new Date().toISOString() })
-          .eq('id', pendingOrder.id)
-
-        if (orderUpdateError) {
-          throw new Error(orderUpdateError.message)
-        }
-
-        const { data: items, error: itemsQueryError } = await supabase
-          .from('order_items')
-          .select('id, product_code')
-          .eq('order_id', pendingOrder.id)
-
-        if (itemsQueryError) {
-          throw new Error(itemsQueryError.message)
-        }
-
-        // NCM is matched by product_code (the seller's own SKU, captured at
-        // sync time from Mercado Livre's order data) - the same code the
-        // invoice prints as "CÓDIGO PRODUTO", so this is a direct, reliable
-        // lookup rather than a positional guess.
-        for (const item of items ?? []) {
-          const ncm = item.product_code ? ncmByProductCode[item.product_code] : undefined
-          if (ncm) {
-            const { error: itemUpdateError } = await supabase.from('order_items').update({ ncm }).eq('id', item.id)
-            if (itemUpdateError) {
-              throw new Error(itemUpdateError.message)
-            }
-          }
-        }
-
-        processed += 1
-      } catch (error) {
-        errors += 1
-        lastError = error instanceof Error ? error.message : String(error)
-      }
-    }
-  } catch (error) {
-    errors += 1
-    lastError = error instanceof Error ? error.message : String(error)
-  }
-
-  await recordSyncRun(supabase, account.id, account.userId, 'reconciliation', { processed, errors, lastError })
-  return { processed, errors }
 }

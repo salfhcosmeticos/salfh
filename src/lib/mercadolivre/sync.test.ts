@@ -1,16 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import {
-  upsertOrder,
-  backfillOrders,
-  buildMonthlyWindows,
-  handleMercadoLivreWebhook,
-  reconcileRecentOrders,
-  retryPendingFiscalDocuments,
-} from './sync'
+import { upsertOrder, backfillOrders, buildMonthlyWindows, handleMercadoLivreWebhook, reconcileRecentOrders } from './sync'
 import type { MercadoLivreOrder } from './client'
 import * as client from './client'
-import * as omieClient from '../omie/client'
 
 function createFakeSupabase() {
   const orderUpsertCalls: unknown[] = []
@@ -93,7 +85,6 @@ const sampleOrder: MercadoLivreOrder = {
 
 beforeEach(() => {
   vi.spyOn(client, 'getBillingInfo').mockResolvedValue({ buyerName: null })
-  vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
 })
 
 describe('upsertOrder', () => {
@@ -134,6 +125,21 @@ describe('upsertOrder - margin data', () => {
     expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ ml_commission: 41.66 }) })
   })
 
+  it('does not include nf_number/nf_fetched_at on the orders upsert or ncm on the order_items upsert - the Omie webhook writes those later, not sync time', async () => {
+    const { client: supabase, orderUpsertCalls, itemsUpsertCalls } = createFakeSupabase()
+    const order: MercadoLivreOrder = {
+      ...sampleOrder,
+      items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: 'SF9004' }],
+    }
+
+    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
+
+    expect((orderUpsertCalls[0] as { data: unknown }).data).not.toHaveProperty('nf_number')
+    expect((orderUpsertCalls[0] as { data: unknown }).data).not.toHaveProperty('nf_fetched_at')
+    expect((itemsUpsertCalls[0] as { data: unknown[] }).data[0]).not.toHaveProperty('ncm')
+    expect((itemsUpsertCalls[0] as { data: unknown[] }).data[0]).toMatchObject({ product_code: 'SF9004' })
+  })
+
   it('uses shipping_or_fee_type "frete" and the seller shipment cost when sale amount is >= 79', async () => {
     const { client: supabase, orderUpsertCalls } = createFakeSupabase()
     vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: null })
@@ -162,41 +168,8 @@ describe('upsertOrder - margin data', () => {
     })
   })
 
-  it('leaves nf_number and nf_fetched_at null and does not throw when no invoice is found', async () => {
-    const { client: supabase, orderUpsertCalls } = createFakeSupabase()
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
-
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder)
-
-    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: null, nf_fetched_at: null }) })
-  })
-
-  it('sets nf_number, nf_fetched_at, product_code and ncm (matched by product code) when an invoice is found', async () => {
-    const { client: supabase, orderUpsertCalls, itemsUpsertCalls } = createFakeSupabase()
-    const order: MercadoLivreOrder = {
-      ...sampleOrder,
-      items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: 'SF9004' }],
-    }
-    // The invoice's product code ("SF9004") matches the order item's
-    // sellerSku - the seller's own SKU, captured from Mercado Livre's order
-    // data, is the same code the seller's ERP (OMIE) prints on the NF-e.
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '123456',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
-
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
-
-    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_number: '123456' }) })
-    expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ nf_fetched_at: expect.any(String) }) })
-    expect(itemsUpsertCalls[0]).toMatchObject({
-      data: [expect.objectContaining({ ml_item_id: 'MLB1', product_code: 'SF9004', ncm: '33059000' })],
-    })
-  })
-
-  it('stores product_code from sellerSku even when no invoice is found yet, and leaves ncm null', async () => {
+  it('stores product_code from sellerSku', async () => {
     const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: 'SF9004' }],
@@ -205,44 +178,12 @@ describe('upsertOrder - margin data', () => {
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
 
     expect(itemsUpsertCalls[0]).toMatchObject({
-      data: [expect.objectContaining({ product_code: 'SF9004', ncm: null })],
+      data: [expect.objectContaining({ product_code: 'SF9004' })],
     })
   })
 
-  it('matches ncm per item by product code, leaving unmatched items null, regardless of item-count differences', async () => {
+  it('leaves product_code null when the item has no seller SKU set on Mercado Livre', async () => {
     const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    // The invoice only carries NCM for SF9004 - SF9846 (a real item on this
-    // order) has no matching line. Matching by code means SF9004 gets its
-    // NCM correctly while SF9846 simply stays null - no guessing, no
-    // dependency on the two lists having matching lengths.
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '123456',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
-    const order: MercadoLivreOrder = {
-      ...sampleOrder,
-      items: [
-        { mlItemId: 'MLB1', title: 'Produto 1', quantity: 1, unitPrice: 169.9, saleFee: 30, sellerSku: 'SF9004' },
-        { mlItemId: 'MLB2', title: 'Produto 2', quantity: 1, unitPrice: 67, saleFee: 11.66, sellerSku: 'SF9846' },
-      ],
-    }
-
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
-
-    expect(itemsUpsertCalls[0]).toMatchObject({
-      data: [
-        expect.objectContaining({ ml_item_id: 'MLB1', product_code: 'SF9004', ncm: '33059000' }),
-        expect.objectContaining({ ml_item_id: 'MLB2', product_code: 'SF9846', ncm: null }),
-      ],
-    })
-  })
-
-  it('leaves product_code and ncm null when the item has no seller SKU set on Mercado Livre', async () => {
-    const { client: supabase, itemsUpsertCalls } = createFakeSupabase()
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '123456',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
     const order: MercadoLivreOrder = {
       ...sampleOrder,
       items: [{ mlItemId: 'MLB1', title: 'Produto', quantity: 1, unitPrice: 150, saleFee: 0, sellerSku: null }],
@@ -251,7 +192,7 @@ describe('upsertOrder - margin data', () => {
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
 
     expect(itemsUpsertCalls[0]).toMatchObject({
-      data: [expect.objectContaining({ product_code: null, ncm: null })],
+      data: [expect.objectContaining({ product_code: null })],
     })
   })
 
@@ -281,32 +222,6 @@ describe('upsertOrder - margin data', () => {
     await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
 
     expect(orderUpsertCalls[0]).toMatchObject({ data: expect.objectContaining({ logistic_type: 'fulfillment' }) })
-  })
-
-  it('looks up the invoice in the filial Omie account when logistic_type is "fulfillment"', async () => {
-    const { client: supabase } = createFakeSupabase()
-    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'São Paulo', state: 'SP', logisticType: 'fulfillment' })
-    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
-    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
-
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
-
-    expect(lookupInvoiceMock).toHaveBeenCalledWith('filial', order.id, new Date(order.dateCreated))
-  })
-
-  it('looks up the invoice in the matriz Omie account for any logistic_type other than "fulfillment", including null', async () => {
-    const { client: supabase } = createFakeSupabase()
-    vi.spyOn(client, 'getShipmentAddress').mockResolvedValue({ city: 'Curitiba', state: 'PR', logisticType: 'self_service' })
-    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
-    const order: MercadoLivreOrder = { ...sampleOrder, shippingId: 987654 }
-
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', order)
-
-    expect(lookupInvoiceMock).toHaveBeenCalledWith('matriz', order.id, new Date(order.dateCreated))
-
-    lookupInvoiceMock.mockClear()
-    await upsertOrder(supabase, 'token-abc', 'account-1', 'user-1', sampleOrder) // shippingId: null -> logisticType stays null
-    expect(lookupInvoiceMock).toHaveBeenCalledWith('matriz', sampleOrder.id, new Date(sampleOrder.dateCreated))
   })
 })
 
@@ -574,394 +489,5 @@ describe('reconcileRecentOrders', () => {
     const result = await reconcileRecentOrders(supabase, account, 2)
     expect(result.processed).toBe(1)
     expect(orderUpsertCalls).toHaveLength(1)
-  })
-})
-
-describe('retryPendingFiscalDocuments', () => {
-  it('counts a failed orders.update write as an error (not processed) and still processes the rest of the batch', async () => {
-    const pendingOrders = [
-      { id: 'order-fail', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
-      { id: 'order-ok', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
-    ]
-    const orderUpdateErrors: Record<string, { message: string } | null> = {
-      'order-fail': { message: 'update rejected by RLS' },
-      'order-ok': null,
-    }
-    const syncRunInserts: unknown[] = []
-
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: () => ({
-                is: async () => ({ data: pendingOrders, error: null }),
-              }),
-            }),
-            update: () => ({
-              eq: async (_col: string, id: string) => ({ error: orderUpdateErrors[id] ?? null }),
-            }),
-          }
-        }
-        if (table === 'order_items') {
-          return {
-            select: () => ({ eq: async () => ({ data: [], error: null }) }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return {
-            insert: async (data: unknown) => {
-              syncRunInserts.push(data)
-              return { error: null }
-            },
-          }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '999',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
-
-    const result = await retryPendingFiscalDocuments(supabase, account)
-
-    // The failing order's write error must surface as an error, not be
-    // silently swallowed and counted as a successful "processed" order - and
-    // the second order in the batch must still be attempted and succeed.
-    expect(result).toEqual({ processed: 1, errors: 1 })
-    expect(syncRunInserts).toHaveLength(1)
-    expect(syncRunInserts[0]).toMatchObject({
-      orders_processed: 1,
-      error_count: 1,
-      last_error: 'update rejected by RLS',
-    })
-  })
-
-  it('filters pending orders by account_id and nf_fetched_at is null', async () => {
-    const selectCalls: { eqArgs: unknown[]; isArgs: unknown[] }[] = []
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: (...eqArgs: unknown[]) => ({
-                is: async (...isArgs: unknown[]) => {
-                  selectCalls.push({ eqArgs, isArgs })
-                  return { data: [], error: null }
-                },
-              }),
-            }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-
-    await retryPendingFiscalDocuments(supabase, account)
-
-    expect(selectCalls).toHaveLength(1)
-    expect(selectCalls[0].eqArgs).toEqual(['account_id', 'account-1'])
-    expect(selectCalls[0].isArgs).toEqual(['nf_fetched_at', null])
-  })
-
-  it('leaves an order untouched and does not count it as an error when no invoice exists yet', async () => {
-    const orderUpdateCalls: unknown[] = []
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: () => ({
-                is: async () => ({
-                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
-                  error: null,
-                }),
-              }),
-            }),
-            update: (data: unknown) => ({
-              eq: async (col: string, id: string) => {
-                orderUpdateCalls.push({ data, col, id })
-                return { error: null }
-              },
-            }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
-
-    const result = await retryPendingFiscalDocuments(supabase, account)
-
-    expect(result).toEqual({ processed: 0, errors: 0 })
-    expect(orderUpdateCalls).toHaveLength(0)
-  })
-
-  it('applies NCM by matching order_items to invoice lines by product_code', async () => {
-    const itemUpdateCalls: { id: string; ncm: string }[] = []
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: () => ({
-                is: async () => ({
-                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
-                  error: null,
-                }),
-              }),
-            }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'order_items') {
-          return {
-            select: () => ({
-              eq: async () => ({
-                data: [
-                  { id: 'item-row-1', product_code: 'SF9004' },
-                  { id: 'item-row-2', product_code: 'SF9846' },
-                ],
-                error: null,
-              }),
-            }),
-            update: (data: { ncm: string }) => ({
-              eq: async (_col: string, id: string) => {
-                itemUpdateCalls.push({ id, ncm: data.ncm })
-                return { error: null }
-              },
-            }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    // Invoice product codes ("SF9004", "SF9846") match the order_items rows'
-    // product_code exactly (captured earlier from Mercado Livre's own
-    // seller_sku), so matching is a direct lookup, not a guess.
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '999',
-      items: [
-        { productCode: 'SF9004', ncm: '33059000' },
-        { productCode: 'SF9846', ncm: '33051000' },
-      ],
-    })
-
-    await retryPendingFiscalDocuments(supabase, account)
-
-    expect(itemUpdateCalls).toEqual(
-      expect.arrayContaining([
-        { id: 'item-row-1', ncm: '33059000' },
-        { id: 'item-row-2', ncm: '33051000' },
-      ])
-    )
-  })
-
-  it('leaves an item untouched when its product_code has no matching line in the invoice', async () => {
-    const itemUpdateCalls: unknown[] = []
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({
-              eq: () => ({
-                is: async () => ({
-                  data: [{ id: 'order-1', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null }],
-                  error: null,
-                }),
-              }),
-            }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'order_items') {
-          return {
-            select: () => ({
-              eq: async () => ({
-                data: [
-                  { id: 'item-row-1', product_code: 'SF9004' },
-                  { id: 'item-row-2', product_code: 'SF9846' },
-                ],
-                error: null,
-              }),
-            }),
-            update: (data: { ncm: string }) => ({
-              eq: async (_col: string, id: string) => {
-                itemUpdateCalls.push({ id, ncm: data.ncm })
-                return { error: null }
-              },
-            }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    // The invoice only has a line for SF9004 - SF9846 has no match and must
-    // simply be left alone, not guessed at.
-    vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue({
-      invoiceNumber: '999',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
-
-    const result = await retryPendingFiscalDocuments(supabase, account)
-
-    expect(result).toEqual({ processed: 1, errors: 0 })
-    expect(itemUpdateCalls).toEqual([{ id: 'item-row-1', ncm: '33059000' }])
-  })
-
-  it('isolates a failure at the invoice-lookup stage so the rest of the batch still processes', async () => {
-    const pendingOrders = [
-      { id: 'order-fail', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
-      { id: 'order-ok', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: null },
-    ]
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({ eq: () => ({ is: async () => ({ data: pendingOrders, error: null }) }) }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'order_items') {
-          return {
-            select: () => ({ eq: async () => ({ data: [], error: null }) }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice')
-    lookupInvoiceMock.mockRejectedValueOnce(new Error('Omie API error on ConsultarNF: 500'))
-    lookupInvoiceMock.mockResolvedValueOnce({
-      invoiceNumber: '999',
-      items: [{ productCode: 'SF9004', ncm: '33059000' }],
-    })
-
-    const result = await retryPendingFiscalDocuments(supabase, account)
-
-    expect(result).toEqual({ processed: 1, errors: 1 })
-    expect(lookupInvoiceMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('routes to the filial Omie account when logistic_type is "fulfillment" and to matriz otherwise', async () => {
-    const pendingOrders = [
-      { id: 'order-full', ml_order_id: 111, order_date: '2026-08-01T10:00:00.000Z', logistic_type: 'fulfillment' },
-      { id: 'order-self', ml_order_id: 222, order_date: '2026-08-01T10:00:00.000Z', logistic_type: 'self_service' },
-    ]
-    const supabase = {
-      from(table: string) {
-        if (table === 'orders') {
-          return {
-            select: () => ({ eq: () => ({ is: async () => ({ data: pendingOrders, error: null }) }) }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'order_items') {
-          return {
-            select: () => ({ eq: async () => ({ data: [], error: null }) }),
-            update: () => ({ eq: async () => ({ error: null }) }),
-          }
-        }
-        if (table === 'sync_runs') {
-          return { insert: async () => ({ error: null }) }
-        }
-        throw new Error(`Unexpected table: ${table}`)
-      },
-    } as unknown as SupabaseClient
-
-    const account = {
-      id: 'account-1',
-      userId: 'user-1',
-      mlUserId: 999,
-      accessToken: 'token-abc',
-      refreshToken: 'refresh-abc',
-      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }
-    vi.spyOn(client, 'getValidAccessToken').mockResolvedValue('token-abc')
-    const lookupInvoiceMock = vi.spyOn(omieClient, 'lookupInvoice').mockResolvedValue(null)
-
-    await retryPendingFiscalDocuments(supabase, account)
-
-    expect(lookupInvoiceMock).toHaveBeenNthCalledWith(1, 'filial', 111, new Date('2026-08-01T10:00:00.000Z'))
-    expect(lookupInvoiceMock).toHaveBeenNthCalledWith(2, 'matriz', 222, new Date('2026-08-01T10:00:00.000Z'))
   })
 })
