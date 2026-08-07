@@ -1,7 +1,7 @@
 # Integração com a Omie via webhook para NCM e XML da nota fiscal — design
 
 **Date:** 2026-08-07
-**Status:** approved by owner, ready for spec review
+**Status:** implemented (all 8 code tasks shipped and reviewed 2026-08-07); rollout (Task 9 of the plan) pending
 **Supersedes:** the "Fetching the invoice" and "Two Omie accounts, chosen by fulfillment type" sections of `2026-08-06-integracao-omie-notas-fiscais-design.md`, and everything built against them in `src/lib/omie/client.ts` (Task 3 of `docs/superpowers/plans/2026-08-06-integracao-omie-notas-fiscais.md`). That spec assumed a single `ConsultarNF`/`ListarNF` call against Omie's `produtos/nfconsultar/` endpoint could resolve an order's invoice directly. Live testing this session (2026-08-06/07, against the real matriz/filial Omie accounts and a real Mercado Livre order, `2000017307031470`) found that design wrong in several load-bearing ways — see "What we learned this session" below — and found a materially better, webhook-driven alternative in the process. This spec replaces the whole lookup design; the rest of the parent spec (margin calculation split by CNPJ, no-write constraint, no settings UI, Mercado Livre only) is unchanged.
 
 ## What we learned this session (context for the design below)
